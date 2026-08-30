@@ -89,12 +89,15 @@ async function downloadNode() {
 }
 
 // ── 2) dsh 运行时闭包 ─────────────────────────────────────────────────────────
+// Windows 上 npm 是 npm.cmd：spawnSync 不带 shell 解析不到，必须显式指名。
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+
 function installRuntime() {
   rmSync(join(runtimeDir, "node_modules"), { recursive: true, force: true });
   rmSync(join(runtimeDir, "package.json"), { force: true });
   mkdirSync(runtimeDir, { recursive: true });
   log("npm install " + PKG + "@" + DSH_VERSION + "（运行时闭包，omit=dev）…");
-  execFileSync("npm", [
+  execFileSync(npmCommand, [
     "install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=warn",
     "--prefix", runtimeDir, PKG + "@" + DSH_VERSION
   ], { stdio: "inherit" });
@@ -106,7 +109,7 @@ function installRuntime() {
   if (process.platform === "win32") {
     // Windows 上 koffi 依赖 install 脚本落位原生预编译产物；显式 rebuild 确保不依赖 npm allowScripts 行为。
     log("npm rebuild koffi（确保原生预编译产物就位）…");
-    execFileSync("npm", ["rebuild", "koffi", "--foreground-scripts", "--loglevel=warn", "--prefix", runtimeDir], {
+    execFileSync(npmCommand, ["rebuild", "koffi", "--foreground-scripts", "--loglevel=warn", "--prefix", runtimeDir], {
       stdio: "inherit"
     });
   }
