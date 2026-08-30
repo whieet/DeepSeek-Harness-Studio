@@ -1,61 +1,68 @@
+# 发布流水线：基于 Tauri 官方文档（https://v2.tauri.app/distribute/pipelines/github/）
+# 触发：push 到 release 分支 / 手动 dispatch。构建、创建 tag、上传 release 均由 tauri-action 完成。
+#
+# 与官方示例的两处差异及理由：
+#   1. Intel 用 macos-15-intel（真 x64 runner）而非 macos-latest 交叉编译——
+#      运行时闭包含 @vscode/ripgrep-darwin-x64 等按平台分发的原生依赖，
+#      npm 只安装当前机器架构的版本，arm64 上交叉拿不到 x64 闭包。
+#   2. Intel 产 .app（--bundles app）而非 dmg——
+#      macos-15-intel 镜像上 bundle_dmg.sh 会挂起（实测 30 分钟），tauri-action 原生支持上传 .app。
+#
+# 另比官方示例多「打包运行时」步骤（下载 Node 侧车 + 安装 dsh 闭包），为本项目架构所需。
+
 name: release
 
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - release
   workflow_dispatch:
 
-# 同 ref 新 run 触发时自动取消旧 run（避免强移 tag 后新旧并行白烧机器）
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: write
-
 jobs:
-  build:
+  publish-tauri:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14          # Apple Silicon
+          - platform: macos-latest    # Apple Silicon（M1 及以上）
             target: aarch64-apple-darwin
             bundles: dmg
-            artifact: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-15-intel    # Intel：bundle_dmg.sh 在该镜像上会挂起 30 分钟，改产 .app + zip
+          - platform: macos-15-intel  # Intel x64（真 x64 runner，理由见文件头）
             target: x86_64-apple-darwin
             bundles: app
-            artifact: dist/*.zip
-          - os: windows-latest    # Windows x64
+          - platform: windows-latest  # Windows x64
             target: x86_64-pc-windows-msvc
             bundles: nsis
-            artifact: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-    runs-on: ${{ matrix.os }}
+
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: 安装 Rust（含目标三元组）
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - uses: pnpm/action-setup@v4
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - name: 安装 Node
+        uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: lts/*
           cache: pnpm
 
-      # Rust 增量缓存：按 target 分键，二次构建 10 分钟 → ~2 分钟
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust 增量缓存
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           key: ${{ matrix.target }}
 
-      # 运行时闭包缓存（Node 侧车 + npm 闭包）：键含 stage 脚本哈希，命中则跳过整个 stage
-      - name: 缓存运行时（Node 侧车 + dsh 闭包）
+      - name: 运行时缓存（Node 侧车 + dsh 闭包）
         id: runtime-cache
         uses: actions/cache@v4
         with:
@@ -71,33 +78,14 @@ jobs:
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
 
-      - name: 构建（${{ matrix.target }}）
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-
-      - name: 收集产物（Intel：zip .app；dmg/nsis 直接收集）
-        shell: bash
-        run: |
-          set -e
-          mkdir -p "${{ github.workspace }}/dist"
-          BUNDLE_DIR="${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/bundle"
-          APP_DIR="${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          ZIP_OUT="${{ github.workspace }}/dist/DeepSeek.Harness_${{ github.ref_name }}_${{ matrix.target }}.app.zip"
-          if [ "${{ matrix.bundles }}" = "app" ]; then
-            test -d "$APP_DIR/DeepSeek Harness.app"
-            zip -qry "$ZIP_OUT" "$APP_DIR/DeepSeek Harness.app"
-          else
-            cp ${{ matrix.artifact }} "${{ github.workspace }}/dist/"
-          fi
-          ls -la "${{ github.workspace }}/dist/"
-
-      - uses: actions/upload-artifact@v4
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: dsh-desktop-${{ matrix.target }}
-          path: dist/*
-          if-no-files-found: error
-
-      - name: 发布到 GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
+          tagName: v__VERSION__
+          releaseName: 'DeepSeek Harness v__VERSION__'
+          releaseBody: '下载对应平台的安装包使用。'
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
