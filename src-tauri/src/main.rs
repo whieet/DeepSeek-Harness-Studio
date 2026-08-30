@@ -75,18 +75,21 @@ fn main() {
             app.manage(AppState { shared, tx: tx.clone() });
 
             // 外部信号（SIGTERM/SIGINT/SIGHUP）也走优雅退出：转发 Shutdown，由监督线程停内核后 app.exit。
-            let signal_tx = tx.clone();
-            std::thread::spawn(move || {
-                use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
-                use signal_hook::iterator::Signals;
-                if let Ok(mut signals) = Signals::new([SIGTERM, SIGINT, SIGHUP]) {
-                    for _signal in signals.forever() {
-                        log::info!("收到终止信号，开始优雅退出");
-                        let _ = signal_tx.send(SuperCommand::Shutdown);
-                        break;
+            #[cfg(unix)]
+            {
+                let signal_tx = tx.clone();
+                std::thread::spawn(move || {
+                    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+                    use signal_hook::iterator::Signals;
+                    if let Ok(mut signals) = Signals::new([SIGTERM, SIGINT, SIGHUP]) {
+                        for _signal in signals.forever() {
+                            log::info!("收到终止信号，开始优雅退出");
+                            let _ = signal_tx.send(SuperCommand::Shutdown);
+                            break;
+                        }
                     }
-                }
-            });
+                });
+            }
 
             // splash 窗口：唯一带 IPC 的窗口（最小权限）；主窗口就绪后创建且零 IPC。
             let _splash = WebviewWindowBuilder::new(app, "splash", WebviewUrl::App("splash.html".into()))
