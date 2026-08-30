@@ -41,7 +41,7 @@ function render(st) {
   spinner.classList.remove("hidden");
   if (!st || st.state === "starting") { detail.textContent = "正在启动内核…"; }
   else if (st.state === "restarting") { detail.textContent = "内核重启中（第 " + st.attempt + " 次）…"; }
-  else if (st.state === "ready") { location.replace(st.url); return; }
+  else if (st.state === "ready") { detail.textContent = "内核已就绪，正在打开主窗口…"; return; }
   else if (st.state === "failed") {
     spinner.classList.add("hidden");
     error.textContent = "内核启动失败：" + (st.error || "未知原因");

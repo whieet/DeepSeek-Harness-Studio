@@ -468,6 +468,9 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         existing.navigate(parsed).map_err(|e| e.to_string())?;
         let _ = existing.show();
         let _ = existing.set_focus();
+        if let Some(splash) = app.get_webview_window("splash") {
+            let _ = splash.destroy();
+        }
         return Ok(());
     }
     let opener_app = app.clone();
@@ -475,6 +478,7 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .title("DeepSeek Harness")
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 600.0)
+        .resizable(true)
         .center()
         .on_navigation(move |nav| {
             let allowed =
@@ -486,6 +490,11 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         })
         .build()
         .map_err(|e| e.to_string())?;
+    // 主窗口就绪后关闭启动页：避免留下一个 480x320 的小窗显示同样的内核界面
+    // （用户会误以为是"最小化后变小的窗口"），且它 resizable(false) 不可拖拽调整。
+    if let Some(splash) = app.get_webview_window("splash") {
+        let _ = splash.destroy();
+    }
     Ok(())
 }
 
