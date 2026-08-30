@@ -7,6 +7,20 @@ use tauri::{AppHandle, Manager};
 pub struct AppSettings {
     #[serde(default)]
     pub workspace_root: Option<String>,
+    /// 启动时自动检查更新（默认开启；None 视为开启）。
+    #[serde(default)]
+    pub auto_check: Option<bool>,
+    /// “此版本跳过”的内核版本。
+    #[serde(default)]
+    pub skipped_kernel_version: Option<String>,
+    /// “此版本跳过”的客户端版本。
+    #[serde(default)]
+    pub skipped_app_version: Option<String>,
+}
+
+/// 是否在启动时自动检查更新（菜单手动检查不受此开关影响）。
+pub fn auto_check_enabled(app: &AppHandle) -> bool {
+    load(app).auto_check != Some(false)
 }
 
 pub fn settings_file(app: &AppHandle) -> PathBuf {

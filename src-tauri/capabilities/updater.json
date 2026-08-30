@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "updater",
+  "description": "updater 窗口最小权限：轮询更新状态与触发更新动作",
+  "windows": [
+    "updater"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

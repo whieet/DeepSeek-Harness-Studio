@@ -11,7 +11,7 @@
     "build_arm64": "tauri build --target aarch64-apple-darwin",
     "build_x64": "tauri build --target x86_64-apple-darwin",
     "build_win": "tauri build --target x86_64-pc-windows-msvc",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml && node --test scripts/update.test.mjs",
     "icon": "node scripts/gen-icon.mjs && tauri icon scripts/icon-1024.png"
   },
   "devDependencies": {

@@ -43,6 +43,8 @@ pub struct Shared {
     pub workspace: Mutex<PathBuf>,
     pub program: Mutex<PathBuf>,
     pub bundle: Mutex<PathBuf>,
+    /// 运行时来源："dev" | "bundled" | "overlay"（诊断用）。
+    pub source: Mutex<String>,
     pub node_version: Mutex<Option<String>>,
 }
 
@@ -54,6 +56,7 @@ impl Shared {
             workspace: Mutex::new(workspace),
             program: Mutex::new(program),
             bundle: Mutex::new(bundle),
+            source: Mutex::new(String::from("unknown")),
             node_version: Mutex::new(None),
         }
     }
@@ -69,11 +72,123 @@ pub struct KernelRuntime {
     pub program: PathBuf,
     pub bin_js: PathBuf,
     pub bundle: PathBuf,
+    pub source: &'static str,
+}
+
+/// 覆盖层判定结果。
+pub enum OverlayPick {
+    /// 使用覆盖层运行时。
+    Use { program: PathBuf, bin_js: PathBuf, bundle: PathBuf },
+    /// 覆盖层存在但不值得使用（如版本回归），调用方应后台清理。
+    IgnoreAndClean,
+    /// 无有效覆盖层，忽略（保留现场便于诊断）。
+    Ignore,
+}
+
+/// 读取 <dir>/package.json 的 version 字段。
+pub fn read_pkg_version(dir: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("version")?.as_str().map(String::from)
+}
+
+/// 轻量 semver 比较（足够内核版本比较用）：逐段数值比较；预发布 < 正式发布；
+/// 预发布标识逐段比较，数字段按数值且小于字母段。忽略前导 v；无法解析视为相等。
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    fn parse(v: &str) -> Option<(Vec<u64>, Vec<String>)> {
+        let v = v.trim();
+        let v = v.strip_prefix('v').unwrap_or(v);
+        let (core, pre) = match v.split_once('-') {
+            Some((c, p)) => (c, Some(p)),
+            None => (v, None),
+        };
+        let mut nums = Vec::new();
+        for part in core.split('.') {
+            nums.push(part.parse::<u64>().ok()?);
+        }
+        if nums.len() != 3 {
+            return None;
+        }
+        let ids: Vec<String> = pre
+            .map(|p| p.split('.').map(String::from).collect())
+            .unwrap_or_default();
+        Some((nums, ids))
+    }
+
+    fn cmp_ids(x: &[String], y: &[String]) -> Ordering {
+        match (x.is_empty(), y.is_empty()) {
+            (true, true) => return Ordering::Equal,
+            (true, false) => return Ordering::Greater,
+            (false, true) => return Ordering::Less,
+            (false, false) => {}
+        }
+        for (xi, yi) in x.iter().zip(y.iter()) {
+            let ord = match (xi.parse::<u64>().ok(), yi.parse::<u64>().ok()) {
+                (Some(na), Some(nb)) => na.cmp(&nb),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => xi.cmp(yi),
+            };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        x.len().cmp(&y.len())
+    }
+
+    match (parse(a), parse(b)) {
+        (Some((na, pa)), Some((nb, pb))) => na.cmp(&nb).then_with(|| cmp_ids(&pa, &pb)),
+        _ => Ordering::Equal,
+    }
+}
+
+/// 判定更新覆盖层是否可用（meta.json status=ready 且版本不回归于内置）。
+pub fn pick_overlay(
+    runtime_dir: &Path,
+    bundled_version: Option<&str>,
+    bundled_program: &Path,
+    is_windows: bool,
+) -> OverlayPick {
+    let dsh_dir = runtime_dir.join("dsh");
+    let bin_js = dsh_dir
+        .join("node_modules")
+        .join("@deepseek-ai")
+        .join("dsh")
+        .join("lib")
+        .join("bin.js");
+    if !bin_js.exists() {
+        return OverlayPick::Ignore;
+    }
+    let Ok(raw) = std::fs::read_to_string(runtime_dir.join("meta.json")) else {
+        return OverlayPick::Ignore;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return OverlayPick::Ignore;
+    };
+    if value.get("status").and_then(|v| v.as_str()) != Some("ready") {
+        return OverlayPick::Ignore;
+    }
+    let Some(overlay_version) = value.get("dshVersion").and_then(|v| v.as_str()) else {
+        return OverlayPick::Ignore;
+    };
+    // 版本回归保护：覆盖层不比内置新 → 忽略并清理（应用升级后自动用回新内置）。
+    if let Some(bundled) = bundled_version {
+        if compare_versions(overlay_version, bundled) != std::cmp::Ordering::Greater {
+            return OverlayPick::IgnoreAndClean;
+        }
+    }
+    let node_name = if is_windows { "dsh-node.exe" } else { "dsh-node" };
+    let node_path = runtime_dir.join("node").join(node_name);
+    let program = if node_path.exists() { node_path } else { bundled_program.to_path_buf() };
+    OverlayPick::Use { program, bin_js, bundle: dsh_dir }
 }
 
 /// 定位内核运行时：
 /// - 开发覆盖：DSH_APP_DIR 指向 dsh 包目录（可选 DSH_NODE 指定 node 可执行）；
-/// - 发行形态：主程序同目录的 dsh-node 侧车 + 资源目录内的运行时闭包。
+/// - 发行形态：主程序同目录的 dsh-node 侧车 + 资源目录内的运行时闭包；
+/// - 更新覆盖层：<app_data>/runtime（更新器落位的新版本，优先于内置）。
 pub fn resolve_runtime(app: &AppHandle) -> Result<KernelRuntime, String> {
     if let Ok(app_dir) = std::env::var("DSH_APP_DIR") {
         let program = std::env::var("DSH_NODE").unwrap_or_else(|_| String::from("node"));
@@ -81,6 +196,7 @@ pub fn resolve_runtime(app: &AppHandle) -> Result<KernelRuntime, String> {
             program: PathBuf::from(program),
             bin_js: PathBuf::from(&app_dir).join("lib").join("bin.js"),
             bundle: PathBuf::from(&app_dir),
+            source: "dev",
         });
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -107,7 +223,23 @@ pub fn resolve_runtime(app: &AppHandle) -> Result<KernelRuntime, String> {
     if !bin_js.exists() {
         return Err(format!("未找到内核入口（{}）。", bin_js.display()));
     }
-    Ok(KernelRuntime { program, bin_js, bundle })
+    let bundled_version = read_pkg_version(&bundle.join("node_modules").join("@deepseek-ai").join("dsh"));
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let runtime_dir = data_dir.join("runtime");
+        match pick_overlay(&runtime_dir, bundled_version.as_deref(), &program, cfg!(windows)) {
+            OverlayPick::Use { program, bin_js, bundle } => {
+                return Ok(KernelRuntime { program, bin_js, bundle, source: "overlay" });
+            }
+            OverlayPick::IgnoreAndClean => {
+                log::info!("[dsh-desktop] 覆盖层内核不比内置新，后台清理：{}", runtime_dir.display());
+                std::thread::spawn(move || {
+                    let _ = std::fs::remove_dir_all(runtime_dir);
+                });
+            }
+            OverlayPick::Ignore => {}
+        }
+    }
+    Ok(KernelRuntime { program, bin_js, bundle, source: "bundled" })
 }
 
 // ── 版本信息（诊断用） ────────────────────────────────────────────────────────
@@ -381,22 +513,25 @@ fn wait_command(rx: &Receiver<SuperCommand>) -> WaitOutcome {
     }
 }
 
+/// 运行时解析器：每次内核（重）启动前调用，使更新覆盖层即时生效。
+pub type RuntimeResolver = Arc<dyn Fn() -> Result<KernelRun, String> + Send + Sync>;
+
 pub fn start_supervisor(
     app: AppHandle,
     shared: Arc<Shared>,
-    run: KernelRun,
+    resolver: RuntimeResolver,
     log_path: PathBuf,
 ) -> Sender<SuperCommand> {
     let (tx, rx) = mpsc::channel::<SuperCommand>();
     let log = Arc::new(LogSink::new(log_path));
-    thread::spawn(move || run_supervisor(app, shared, run, rx, log));
+    thread::spawn(move || run_supervisor(app, shared, resolver, rx, log));
     tx
 }
 
 fn run_supervisor(
     app: AppHandle,
     shared: Arc<Shared>,
-    run: KernelRun,
+    resolver: RuntimeResolver,
     rx: Receiver<SuperCommand>,
     log: Arc<LogSink>,
 ) {
@@ -434,8 +569,28 @@ fn run_supervisor(
             None => {}
         }
 
-        // 2) 内核未运行则拉起
+        // 2) 内核未运行则解析运行时并拉起（每次重新解析：覆盖层落位后重启即生效）
         if kernel.is_none() {
+            let run = match resolver() {
+                Ok(run) => run,
+                Err(error) => {
+                    log.line(&format!("[dsh-desktop] 运行时定位失败：{}", error));
+                    set_status(
+                        &shared,
+                        KernelStatus::Failed { error: format!("运行时定位失败：{}", error) },
+                    );
+                    match wait_command(&rx) {
+                        WaitOutcome::Shutdown => {
+                            app.exit(0);
+                            return;
+                        }
+                        WaitOutcome::Restart => {
+                            auto_attempts = 0;
+                            continue;
+                        }
+                    }
+                }
+            };
             let cwd = shared.workspace.lock().unwrap().clone();
             let status = if auto_attempts == 0 {
                 KernelStatus::Starting { attempt: 0 }
@@ -596,6 +751,89 @@ mod tests {
     #[test]
     fn http_is_ok_rejects_dead_port() {
         assert!(!http_is_ok(1));
+    }
+
+    #[test]
+    fn compare_versions_orders_prereleases() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_versions("0.1.1-rc.2", "0.1.1"), Ordering::Less);
+        assert_eq!(compare_versions("0.1.1", "0.1.1-rc.2"), Ordering::Greater);
+        assert_eq!(compare_versions("0.1.1-rc.2", "0.1.1-rc.10"), Ordering::Less);
+        assert_eq!(compare_versions("0.2.0", "0.1.9"), Ordering::Greater);
+        assert_eq!(compare_versions("v1.2.3", "1.2.3"), Ordering::Equal);
+        assert_eq!(compare_versions("1.0.0-alpha", "1.0.0-alpha.1"), Ordering::Less);
+        assert_eq!(compare_versions("1.0.0-alpha.1", "1.0.0-beta"), Ordering::Less);
+        assert_eq!(compare_versions("abc", "1.0.0"), Ordering::Equal);
+    }
+
+    fn make_overlay(dir: &Path, version: &str, status: &str) {
+        std::fs::create_dir_all(
+            dir.join("dsh")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh")
+                .join("lib"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("dsh")
+                .join("node_modules")
+                .join("@deepseek-ai")
+                .join("dsh")
+                .join("lib")
+                .join("bin.js"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("meta.json"),
+            format!("{{ \"status\": \"{}\", \"dshVersion\": \"{}\" }}", status, version),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pick_overlay_prefers_newer_ready_overlay() {
+        let dir = std::env::temp_dir().join(format!("dsh-ov-test-{}-a", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        make_overlay(&dir, "9.9.9", "ready");
+        let bundled = dir.join("bundled-node");
+        match pick_overlay(&dir, Some("0.1.1"), &bundled, false) {
+            OverlayPick::Use { program, bin_js, bundle } => {
+                assert_eq!(program, bundled);
+                assert!(bin_js.ends_with("bin.js"));
+                assert!(bundle.ends_with("dsh"));
+            }
+            _ => panic!("应使用覆盖层"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pick_overlay_flags_version_regression() {
+        let dir = std::env::temp_dir().join(format!("dsh-ov-test-{}-b", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        make_overlay(&dir, "0.0.1", "ready");
+        match pick_overlay(&dir, Some("0.1.1"), &dir.join("node"), false) {
+            OverlayPick::IgnoreAndClean => {}
+            _ => panic!("版本回归应触发清理"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pick_overlay_ignores_failed_or_missing() {
+        let dir = std::env::temp_dir().join(format!("dsh-ov-test-{}-c", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // 无 meta
+        assert!(matches!(pick_overlay(&dir, None, &dir.join("n"), false), OverlayPick::Ignore));
+        // status != ready
+        make_overlay(&dir, "9.9.9", "failed");
+        assert!(matches!(pick_overlay(&dir, None, &dir.join("n"), false), OverlayPick::Ignore));
+        // meta 缺 dshVersion
+        std::fs::write(dir.join("meta.json"), "{ \"status\": \"ready\" }").unwrap();
+        assert!(matches!(pick_overlay(&dir, None, &dir.join("n"), false), OverlayPick::Ignore));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

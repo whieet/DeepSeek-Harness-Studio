@@ -1,8 +1,9 @@
 // 运行时打包脚本：按当前宿主平台下载 Node 运行时 + 安装 dsh 依赖闭包 + 内核冒烟自检。
 // 用法：node scripts/stage-runtime.mjs [--skip-smoke]
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
-  chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync,
+  chmodSync, copyFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync,
   rmSync, statSync, writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,6 +12,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const NODE_VERSION = "v24.20.0";       // 随包 Node LTS
+const NODE_DIST_BASE = "https://nodejs.org/dist";
 const DSH_VERSION = "0.1.1-rc.2";      // 锁定内核版本（npm latest）
 const PKG = "@deepseek-ai/dsh";
 const URL_MARK = "dsh web: http://127.0.0.1:";
@@ -50,13 +52,13 @@ const runtimeDir = join(ROOT, "src-tauri", "resources", "dsh");
 
 function log(msg) { console.log("[stage] " + msg); }
 
-// ── 1) Node 运行时 ────────────────────────────────────────────────────────────
-async function downloadNode() {
-  if (existsSync(sidecarPath)) {
-    log("Node 侧车已存在：" + sidecarName + "（跳过下载）");
-    return;
-  }
-  mkdirSync(binDir, { recursive: true });
+// ── 1) Node 运行时 + npm 资源 + 更新器脚本 ───────────────────────────────────
+
+// Node 官方发行版在本次运行内只下载/解压一次，供侧车与 npm 资源共用。
+let distCache = null;
+
+async function ensureDist() {
+  if (distCache) return distCache;
   const work = mkdtempSync(join(tmpdir(), "dsh-node-"));
   const archive = join(work, "node." + (archiveUrl.endsWith(".zip") ? "zip" : "tar.gz"));
   log("下载 Node " + NODE_VERSION + "：" + archiveUrl);
@@ -66,10 +68,45 @@ async function downloadNode() {
     process.exit(1);
   }
   const data = Buffer.from(await res.arrayBuffer());
+
+  // SHASUMS256 校验（官方 SHASUMS256.txt："<sha256>  <filename>"）
+  const shaName = archiveUrl.split("/").pop();
+  const shaRes = await fetch(NODE_DIST_BASE + "/" + NODE_VERSION + "/SHASUMS256.txt", { redirect: "follow" });
+  if (!shaRes.ok) {
+    console.error("SHASUMS256.txt 下载失败：HTTP " + shaRes.status);
+    process.exit(1);
+  }
+  const shaLine = (await shaRes.text())
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.split(/\s+/)[1] === shaName);
+  if (!shaLine) {
+    console.error("SHASUMS256.txt 中缺少 " + shaName);
+    process.exit(1);
+  }
+  const expected = shaLine.split(/\s+/)[0].toLowerCase();
+  const actual = createHash("sha256").update(data).digest("hex");
+  if (expected !== actual) {
+    console.error("Node 产物 SHASUMS256 校验失败（期望 " + expected + "，实际 " + actual + "）");
+    process.exit(1);
+  }
+  log("SHASUMS256 校验通过");
+
   writeFileSync(archive, data);
   log("解压 " + archive);
   execFileSync("tar", ["-xf", archive, "-C", work], { stdio: "inherit" });
-  const src = join(work, archiveDir, nodeInside);
+  distCache = { work, archiveDir };
+  return distCache;
+}
+
+async function downloadNode() {
+  if (existsSync(sidecarPath)) {
+    log("Node 侧车已存在：" + sidecarName + "（跳过下载）");
+    return;
+  }
+  mkdirSync(binDir, { recursive: true });
+  const dist = await ensureDist();
+  const src = join(dist.work, dist.archiveDir, nodeInside);
   if (!existsSync(src)) {
     console.error("解压后未找到：" + src);
     process.exit(1);
@@ -84,8 +121,36 @@ async function downloadNode() {
       console.error("codesign 失败（可忽略，仅本机调试）：" + e.message);
     }
   }
-  rmSync(work, { recursive: true, force: true });
   log("Node 侧车就绪：" + sidecarPath + "（" + Math.round(statSync(sidecarPath).size / 1024 / 1024) + "MB）");
+}
+
+// npm CLI 随包：更新器在用户机器上用它执行安装（用户机没有 npm）。
+async function stageNpm() {
+  const npmTarget = join(ROOT, "src-tauri", "resources", "npm");
+  if (existsSync(join(npmTarget, "bin", "npm-cli.js"))) {
+    log("npm 资源已存在（跳过）");
+    return;
+  }
+  const dist = await ensureDist();
+  const npmInside = process.platform === "win32"
+    ? join(dist.work, dist.archiveDir, "node_modules", "npm")
+    : join(dist.work, dist.archiveDir, "lib", "node_modules", "npm");
+  if (!existsSync(npmInside)) {
+    console.error("Node 发行版内未找到 npm：" + npmInside);
+    process.exit(1);
+  }
+  rmSync(npmTarget, { recursive: true, force: true });
+  mkdirSync(dirname(npmTarget), { recursive: true });
+  cpSync(npmInside, npmTarget, { recursive: true });
+  log("npm 资源就绪：" + npmTarget);
+}
+
+// 更新器脚本随包（源码单一来源：scripts/update.mjs）。
+function stageUpdateScript() {
+  const targetDir = join(ROOT, "src-tauri", "resources", "update");
+  mkdirSync(targetDir, { recursive: true });
+  copyFileSync(join(ROOT, "scripts", "update.mjs"), join(targetDir, "update.mjs"));
+  log("更新器脚本就绪：" + join(targetDir, "update.mjs"));
 }
 
 // ── 2) dsh 运行时闭包 ─────────────────────────────────────────────────────────
@@ -249,6 +314,9 @@ async function smoke() {
 // ── 主流程 ────────────────────────────────────────────────────────────────────
 log("平台：" + process.platform + "/" + arch + " → " + triple);
 await downloadNode();
+await stageNpm();
+if (distCache) rmSync(distCache.work, { recursive: true, force: true });
+stageUpdateScript();
 installRuntime();
 log("运行时闭包大小：" + fmtSize(dirSize(runtimeDir)));
 if (!SKIP_SMOKE) {

@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>软件更新</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, "SF Pro Text", "Segoe UI", "Microsoft YaHei", sans-serif;
+      background: #1b1c1f; color: #e8e8ea; font-size: 13px;
+      padding: 16px; user-select: none; -webkit-user-select: none;
+    }
+    h1 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+    .channel {
+      border: 1px solid #33353a; border-radius: 10px;
+      padding: 12px; margin-bottom: 10px; background: #222327;
+    }
+    .channel .name { font-weight: 600; margin-bottom: 4px; }
+    .channel .ver { color: #a8a9ad; margin-bottom: 8px; }
+    .channel .ver .new { color: #6ecf97; }
+    .channel .note { color: #b8a468; font-size: 12px; margin-bottom: 8px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    button {
+      font: inherit; padding: 5px 12px; border-radius: 7px;
+      border: 1px solid #45474d; background: #2c2e33; color: #e8e8ea; cursor: pointer;
+    }
+    button.primary { background: #3d6bd8; border-color: #3d6bd8; }
+    button:hover { filter: brightness(1.12); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    .progress-wrap { margin-top: 8px; display: none; }
+    .progress-wrap.show { display: block; }
+    .bar { height: 6px; border-radius: 3px; background: #33353a; overflow: hidden; }
+    .bar > div { height: 100%; width: 0%; background: #3d6bd8; transition: width .3s; }
+    .progress-msg { color: #a8a9ad; font-size: 12px; margin-top: 5px; }
+    .msg { margin-top: 8px; font-size: 12px; }
+    .msg.ok { color: #6ecf97; }
+    .msg.err { color: #e07a7a; word-break: break-all; }
+    footer { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+    footer .hint { color: #7c7d81; font-size: 12px; }
+    a { color: #7ba3e8; text-decoration: none; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>软件更新</h1>
+
+  <div class="channel" id="kernel-box">
+    <div class="name">DeepSeek Harness 内核</div>
+    <div class="ver" id="kernel-ver"></div>
+    <div class="note hidden" id="kernel-note">新版本要求更新的 Node 运行时，将一并下载安装（已校验 SHASUMS256）。</div>
+    <div class="row" id="kernel-actions">
+      <button class="primary" id="kernel-update">更新内核</button>
+      <button id="kernel-skip">此版本跳过</button>
+    </div>
+    <div class="progress-wrap" id="kernel-progress">
+      <div class="bar"><div id="kernel-bar"></div></div>
+      <div class="progress-msg" id="kernel-progress-msg"></div>
+    </div>
+    <div class="row hidden" id="kernel-restart-row" style="margin-top:8px;">
+      <button class="primary" id="kernel-restart">立即重启内核生效</button>
+      <span style="color:#6ecf97; font-size:12px;">更新完成，重启内核后生效</span>
+    </div>
+    <div class="msg" id="kernel-msg"></div>
+  </div>
+
+  <div class="channel hidden" id="app-box">
+    <div class="name">DeepSeek Harness 桌面版（客户端）</div>
+    <div class="ver" id="app-ver"></div>
+    <div class="row">
+      <button class="primary" id="app-download">前往下载</button>
+      <button id="app-skip">此版本跳过</button>
+    </div>
+    <div class="msg err" id="app-msg"></div>
+  </div>
+
+  <div class="msg err hidden" id="global-err"></div>
+
+  <footer>
+    <span class="hint" id="hint">正在检查更新…</span>
+    <button id="dismiss">以后再说</button>
+  </footer>
+
+<script>
+  const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+
+  const el = (id) => document.getElementById(id);
+  const setVer = (node, cur, latest) => {
+    node.textContent = latest
+      ? "当前 " + cur + " → 最新 " + latest
+      : "当前 " + cur;
+  };
+
+  function renderKernel(st) {
+    const box = el("kernel-box");
+    const actions = el("kernel-actions");
+    const restartRow = el("kernel-restart-row");
+    const progress = el("kernel-progress");
+    const msg = el("kernel-msg");
+    const note = el("kernel-note");
+    msg.textContent = "";
+    msg.className = "msg";
+
+    if (!st || !st.latest) {
+      box.classList.add("hidden");
+      return;
+    }
+    box.classList.remove("hidden");
+    setVer(el("kernel-ver"), st.current, st.latest);
+
+    if (st.kind === "pendingRestart") {
+      actions.classList.add("hidden");
+      progress.classList.remove("show");
+      restartRow.classList.remove("hidden");
+      return;
+    }
+    restartRow.classList.add("hidden");
+
+    if (st.kind === "applying") {
+      actions.classList.add("hidden");
+      progress.classList.add("show");
+      el("kernel-bar").style.width = (st.pct ?? 0) + "%";
+      el("kernel-progress-msg").textContent = st.message ?? "";
+      note.classList.add("hidden");
+      return;
+    }
+    progress.classList.remove("show");
+
+    if (st.kind === "failed") {
+      actions.classList.remove("hidden");
+      el("kernel-update").disabled = false;
+      msg.textContent = "更新失败：" + (st.error ?? "未知错误");
+      msg.className = "msg err";
+      return;
+    }
+
+    actions.classList.toggle("hidden", !st.prompt);
+    el("kernel-update").disabled = false;
+    if (st.prompt) {
+      note.classList.toggle("hidden", st.nodeSufficient !== false);
+    }
+  }
+
+  function renderApp(st) {
+    const box = el("app-box");
+    if (!st || !st.latest) {
+      box.classList.add("hidden");
+      return;
+    }
+    box.classList.remove("hidden");
+    setVer(el("app-ver"), st.current, st.latest);
+  }
+
+  async function tick() {
+    try {
+      const st = await invoke("update_state");
+      renderKernel(st.kernel ? { ...st.kernel, kind: st.phase.kind, pct: st.phase.pct, message: st.phase.message, error: st.phase.error } : null);
+      renderApp(st.app);
+      el("app-msg").textContent = st.app && st.app.reason && st.app.reason !== "no-release" ? "(" + st.app.reason + ")" : "";
+
+      const errBox = el("global-err");
+      if (st.phase.kind === "failed" && !st.kernel) {
+        errBox.textContent = "检查失败：" + (st.phase.error ?? "");
+        errBox.classList.remove("hidden");
+        el("hint").textContent = "检查失败";
+      } else {
+        errBox.classList.add("hidden");
+        if (st.phase.kind === "checking") el("hint").textContent = "正在检查更新…";
+        else if (st.kernel || st.app) el("hint").textContent = "";
+        else if (st.manual) el("hint").textContent = "已是最新版本";
+        else el("hint").textContent = "正在检查更新…";
+      }
+    } catch (e) {
+      el("hint").textContent = "状态获取失败：" + e;
+    }
+  }
+
+  el("kernel-update").addEventListener("click", () => {
+    el("kernel-update").disabled = true;
+    invoke("update_begin").catch((e) => { el("kernel-msg").textContent = String(e); el("kernel-msg").className = "msg err"; });
+  });
+  el("kernel-restart").addEventListener("click", () => invoke("update_restart_kernel"));
+  el("kernel-skip").addEventListener("click", () => invoke("update_skip", { channel: "kernel" }));
+  el("app-download").addEventListener("click", () => invoke("update_open_download"));
+  el("app-skip").addEventListener("click", () => invoke("update_skip", { channel: "app" }));
+  el("dismiss").addEventListener("click", () => invoke("update_dismiss"));
+
+  tick();
+  setInterval(tick, 500);
+</script>
+</body>
+</html>

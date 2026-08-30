@@ -7,6 +7,7 @@ mod config;
 mod menu;
 mod server;
 mod state;
+mod update;
 
 use std::sync::Arc;
 
@@ -34,7 +35,17 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![state::dsh_state, state::dsh_retry])
+        .invoke_handler(tauri::generate_handler![
+            state::dsh_state,
+            state::dsh_retry,
+            update::update_state,
+            update::update_begin,
+            update::update_open_download,
+            update::update_skip,
+            update::update_dismiss,
+            update::update_restart_kernel,
+            update::update_check_now
+        ])
         .on_menu_event(menu::handle_menu_event)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -50,29 +61,39 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // 内核运行时定位（开发覆盖 / 随包资源），并启动监督线程。
+            // 内核运行时定位（开发覆盖 / 随包资源 / 更新覆盖层），并启动监督线程。
             let runtime = server::resolve_runtime(&handle)?;
-            let args = vec![
-                runtime.bin_js.to_string_lossy().into_owned(),
-                String::from("--profile"),
-                String::from("web"),
-                String::from("--port"),
-                String::from("0"),
-                String::from("--no-open"),
-            ];
             let workspace = config::current_workspace(&handle);
             let shared = Arc::new(Shared::new(
                 runtime.program.clone(),
                 runtime.bundle.clone(),
                 workspace,
             ));
+            *shared.source.lock().unwrap() = runtime.source.to_string();
             let log_dir = handle.path().app_log_dir().map_err(|e| e.to_string())?;
-            let run = KernelRun {
-                program: runtime.program,
-                args,
-            };
-            let tx = server::start_supervisor(handle.clone(), Arc::clone(&shared), run, log_dir.join("dsh.log"));
+
+            // 每次内核（重）启动前重新解析运行时：更新覆盖层落位后重启即生效。
+            let resolver_handle = handle.clone();
+            let resolver_shared = Arc::clone(&shared);
+            let resolver: server::RuntimeResolver = Arc::new(move || {
+                let rt = server::resolve_runtime(&resolver_handle)?;
+                *resolver_shared.program.lock().unwrap() = rt.program.clone();
+                *resolver_shared.bundle.lock().unwrap() = rt.bundle.clone();
+                *resolver_shared.source.lock().unwrap() = rt.source.to_string();
+                let args = vec![
+                    rt.bin_js.to_string_lossy().into_owned(),
+                    String::from("--profile"),
+                    String::from("web"),
+                    String::from("--port"),
+                    String::from("0"),
+                    String::from("--no-open"),
+                ];
+                Ok(KernelRun { program: rt.program, args })
+            });
+
+            let tx = server::start_supervisor(handle.clone(), Arc::clone(&shared), resolver, log_dir.join("dsh.log"));
             app.manage(AppState { shared, tx: tx.clone() });
+            app.manage(update::UpdateState::default());
 
             // 外部信号（SIGTERM/SIGINT/SIGHUP）也走优雅退出：转发 Shutdown，由监督线程停内核后 app.exit。
             #[cfg(unix)]
@@ -101,6 +122,9 @@ fn main() {
 
             let app_menu = menu::build_menu(&handle)?;
             app.set_menu(app_menu)?;
+
+            // 启动自动检查更新（内核就绪后触发；autoCheck 关闭则跳过）。
+            update::start_auto_check(&handle);
 
             log::info!("dsh-desktop 启动完成");
             Ok(())

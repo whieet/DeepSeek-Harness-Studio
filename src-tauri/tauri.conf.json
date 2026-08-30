@@ -25,7 +25,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/dsh": "dsh"
+      "resources/dsh": "dsh",
+      "resources/npm": "npm",
+      "resources/update": "update"
     },
     "externalBin": [
       "binaries/dsh-node"

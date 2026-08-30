@@ -55,6 +55,15 @@ pnpm build_win        # Windows x64
 3. 在 DSH 设置页配置模型 API Key（或沿用已有的 `~/.dsh/.credentials.yaml`）。
 4. 应用菜单「更改工作目录…」选择默认工作区（默认为主目录；会话内仍可自由切换工作区）。
 
+## 更新
+
+应用采用**两条更新通道、一个入口**（菜单「检查更新…」或启动时自动检查）：
+
+- **内核通道**（dsh 运行时闭包 + Node）：内核就绪后后台查询 npm registry；有新版时弹出更新面板，同意后在用户机器上自动装配——按需下载满足新版 `engines` 要求的 Node（SHASUMS256 校验）、`npm install --ignore-scripts` 闭包（原生模块全部为 prebuilt 平台包）、冒烟自检通过后原子落位到 `<app_data>/runtime/` 覆盖层，重启内核生效；任何失败自动回滚内置运行时，`~/.dsh` 用户数据不受影响。菜单「恢复内置内核」可随时回退。
+- **客户端通道**（.app/.exe 壳本身）：检查 GitHub Releases（`whieet/DeepSeek-Harness-Studio`），有新版时提示「前往下载」；仓库尚无 Release 时静默跳过。签名落地后此通道将升级为应用内自动更新（tauri-plugin-updater），入口不变。
+
+设置项（`<app_data>/settings.json`）：`autoCheck`（默认开启）、`skippedKernelVersion` / `skippedAppVersion`（「此版本跳过」写入）。
+
 ## 常见问题
 
 - **端口冲突？** 不会。桌面版使用 `--port 0`（操作系统分配空闲端口），与 CLI 的 3080 并存互不干扰。
@@ -66,7 +75,8 @@ pnpm build_win        # Windows x64
 ## 路线图
 
 - [ ] Apple 签名/公证 + Windows 代码签名（阶段二）
-- [ ] tauri-plugin-updater 自动更新（依赖签名）
+- [x] 双通道更新：内核自动装配（覆盖层）+ 客户端下载指引
+- [ ] tauri-plugin-updater 客户端原地自动更新（依赖签名，入口已预留）
 - [ ] 托盘、`dsh://` 深链、独立日志窗口
 - [ ] universal .app（需解决 per-arch 原生二进制合并）
 
