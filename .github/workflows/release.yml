@@ -3,13 +3,6 @@ name: release
 on:
   push:
     tags: ["v*"]
-    branches: [main]
-    paths:
-      - ".github/workflows/release.yml"
-      - "src-tauri/**"
-      - "scripts/**"
-      - "ui/**"
-      - "package.json"
   workflow_dispatch:
 
 # 同 ref 新 run 触发时自动取消旧 run（避免强移 tag 后新旧并行白烧机器）
@@ -90,8 +83,8 @@ jobs:
           APP_DIR="${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
           ZIP_OUT="${{ github.workspace }}/dist/DeepSeek.Harness_${{ github.ref_name }}_${{ matrix.target }}.app.zip"
           if [ "${{ matrix.bundles }}" = "app" ]; then
-            test -d "${{ APP_DIR }}/DeepSeek Harness.app"
-            zip -qry "${{ ZIP_OUT }}" "${{ APP_DIR }}/DeepSeek Harness.app"
+            test -d "$APP_DIR/DeepSeek Harness.app"
+            zip -qry "$ZIP_OUT" "$APP_DIR/DeepSeek Harness.app"
           else
             cp ${{ matrix.artifact }} "${{ github.workspace }}/dist/"
           fi
