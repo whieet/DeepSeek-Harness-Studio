@@ -1,0 +1,16 @@
+DeepSeek Harness 桌面版（dsh-desktop）
+
+本产品包含以下第三方软件：
+
+1. DeepSeek Harness (@deepseek-ai/dsh 及 @deepseek-ai/* 系列包)
+   Copyright (c) DeepSeek
+   License: MIT (https://github.com/deepseek-ai/deepseek-harness)
+
+2. Node.js (随包分发，仅作为运行时)
+   Copyright (c) OpenJS Foundation and Node.js contributors
+   License: MIT (https://nodejs.org)
+
+3. Tauri 及 Tauri 插件生态
+   License: Apache-2.0 / MIT (https://tauri.app)
+
+完整许可证文本见各上游项目仓库。

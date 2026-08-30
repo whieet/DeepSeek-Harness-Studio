@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DeepSeek Harness</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1220; color: #e6edf3;
+    font-family: -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; user-select: none; }
+  .logo { width: 64px; height: 64px; border-radius: 16px;
+    background: linear-gradient(135deg, #2e7cf6, #7a5cf6); display: flex; align-items: center;
+    justify-content: center; font-size: 32px; font-weight: 700; color: #fff; }
+  #title { font-size: 15px; font-weight: 600; }
+  #detail { font-size: 12px; color: #8b98a9; text-align: center; max-width: 380px; line-height: 1.6; }
+  .spinner { width: 22px; height: 22px; border: 3px solid #2b3648; border-top-color: #2e7cf6;
+    border-radius: 50%; animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #retry { display: none; padding: 8px 22px; border-radius: 8px; border: none; background: #2e7cf6;
+    color: #fff; font-size: 13px; cursor: pointer; }
+  #retry:hover { background: #4a8ff7; }
+  #error { display: none; color: #ff7a7a; font-size: 12px; max-width: 400px; text-align: center;
+    white-space: pre-wrap; word-break: break-all; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div class="logo">DS</div>
+  <div id="title">DeepSeek Harness</div>
+  <div class="spinner" id="spinner"></div>
+  <div id="detail">正在启动内核…</div>
+  <div id="error"></div>
+  <button id="retry">重试</button>
+</body>
+<script>
+const $ = (id) => document.getElementById(id);
+const detail = $("detail"), error = $("error"), retry = $("retry"), spinner = $("spinner");
+
+function render(st) {
+  error.style.display = "none";
+  retry.style.display = "none";
+  spinner.classList.remove("hidden");
+  if (!st || st.state === "starting") { detail.textContent = "正在启动内核…"; }
+  else if (st.state === "restarting") { detail.textContent = "内核重启中（第 " + st.attempt + " 次）…"; }
+  else if (st.state === "ready") { location.replace(st.url); return; }
+  else if (st.state === "failed") {
+    spinner.classList.add("hidden");
+    error.textContent = "内核启动失败：" + (st.error || "未知原因");
+    detail.textContent = "可点击“重试”或查看日志（应用菜单：打开日志目录）。";
+    retry.style.display = "inline-block";
+    return;
+  }
+}
+
+async function tick() {
+  try {
+    render(await window.__TAURI__.core.invoke("dsh_state"));
+  } catch (e) {
+    detail.textContent = "连接应用失败，等待重连…";
+  }
+}
+
+retry.addEventListener("click", async () => {
+  retry.style.display = "none";
+  detail.textContent = "正在重试…";
+  try { await window.__TAURI__.core.invoke("dsh_retry"); } catch (e) { /* ignore */ }
+});
+
+tick();
+setInterval(tick, 800);
+</script>
+</html>

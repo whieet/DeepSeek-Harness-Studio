@@ -1,0 +1,9 @@
+node_modules/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/resources/dsh/*
+!src-tauri/resources/dsh/.gitkeep
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+scripts/icon-1024.png
+.DS_Store
