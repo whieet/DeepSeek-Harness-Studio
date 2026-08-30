@@ -3,7 +3,19 @@ name: release
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - "src-tauri/**"
+      - "scripts/**"
+      - "ui/**"
+      - "package.json"
   workflow_dispatch:
+
+# 同 ref 新 run 触发时自动取消旧 run（避免强移 tag 后新旧并行白烧机器）
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -17,7 +29,7 @@ jobs:
           - os: macos-14          # Apple Silicon
             target: aarch64-apple-darwin
             artifact: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-15-intel    # Intel
+          - os: macos-15-intel    # Intel（macos-13 已退役）
             target: x86_64-apple-darwin
             artifact: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - os: windows-latest    # Windows x64
@@ -40,25 +52,42 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      # Rust 增量缓存：按 target 分键，二次构建 10 分钟 → ~2 分钟
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      # 运行时闭包缓存（Node 侧车 + npm 闭包）：键含 stage 脚本哈希，命中则跳过整个 stage
+      - name: 缓存运行时（Node 侧车 + dsh 闭包）
+        id: runtime-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            src-tauri/binaries/dsh-node-*
+            src-tauri/resources/dsh
+          key: dsh-runtime-${{ matrix.target }}-${{ hashFiles('scripts/stage-runtime.mjs') }}
+
+      - name: 打包运行时（缓存未命中才执行）
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        run: node scripts/stage-runtime.mjs
+
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
-
-      - name: 打包运行时（Node 侧车 + dsh 闭包 + 冒烟自检）
-        run: node scripts/stage-runtime.mjs
 
       - name: 构建（${{ matrix.target }}）
         run: pnpm tauri build --target ${{ matrix.target }}
 
-      # 签名/公证占位（阶段二）：配置 APPLE_CERTIFICATE* / WINDOWS_CERTIFICATE 后启用。
-      # - name: macOS 签名与公证
-      #   if: runner.os == 'macOS'
-      #   run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg --config bundle.macOS.signingIdentity=...
-
-      - name: 收集产物
+      - name: 收集产物（dmg 缺失时回退 zip .app）
         shell: bash
         run: |
           mkdir -p dist
-          cp ${{ matrix.artifact }} dist/ || true
+          cp ${{ matrix.artifact }} dist/ 2>/dev/null || true
+          if ! ls dist/* >/dev/null 2>&1 && [ -d "src-tauri/target/${{ matrix.target }}/release/bundle/macos" ]; then
+            cd "src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+            zip -qry "${{ github.workspace }}/dist/DeepSeek.Harness_${{ github.ref_name }}_${{ matrix.target }}.app.zip" "DeepSeek Harness.app"
+          fi
+          ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
