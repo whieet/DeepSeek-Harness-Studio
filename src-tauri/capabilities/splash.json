@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash",
+  "description": "splash 窗口最小权限：轮询内核状态与发起重试",
+  "windows": [
+    "splash"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

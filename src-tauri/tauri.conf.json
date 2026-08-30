@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DeepSeek Harness",
+  "version": "0.1.0",
+  "identifier": "com.river.dsh-desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/dsh": "dsh"
+    },
+    "externalBin": [
+      "binaries/dsh-node"
+    ],
+    "shortDescription": "DeepSeek Harness 桌面版",
+    "longDescription": "DeepSeek Harness 桌面版：内置 Web 内核的本地桌面客户端（macOS / Windows）。"
+  }
+}
