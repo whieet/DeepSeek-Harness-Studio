@@ -90,7 +90,8 @@ async function downloadNode() {
 
 // ── 2) dsh 运行时闭包 ─────────────────────────────────────────────────────────
 function installRuntime() {
-  rmSync(runtimeDir, { recursive: true, force: true });
+  rmSync(join(runtimeDir, "node_modules"), { recursive: true, force: true });
+  rmSync(join(runtimeDir, "package.json"), { force: true });
   mkdirSync(runtimeDir, { recursive: true });
   log("npm install " + PKG + "@" + DSH_VERSION + "（运行时闭包，omit=dev）…");
   execFileSync("npm", [
