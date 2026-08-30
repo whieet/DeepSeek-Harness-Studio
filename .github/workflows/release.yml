@@ -28,12 +28,15 @@ jobs:
         include:
           - os: macos-14          # Apple Silicon
             target: aarch64-apple-darwin
+            bundles: dmg
             artifact: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - os: macos-15-intel    # Intel（macos-13 已退役）
+          - os: macos-15-intel    # Intel：bundle_dmg.sh 在该镜像上会挂起 30 分钟，改产 .app + zip
             target: x86_64-apple-darwin
-            artifact: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            bundles: app
+            artifact: dist/*.zip
           - os: windows-latest    # Windows x64
             target: x86_64-pc-windows-msvc
+            bundles: nsis
             artifact: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
     runs-on: ${{ matrix.os }}
     steps:
@@ -76,9 +79,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 构建（${{ matrix.target }}）
-        run: pnpm tauri build --target ${{ matrix.target }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
-      - name: 收集产物（dmg 缺失时回退 zip .app）
+      - name: 收集产物（Intel：zip .app；dmg/nsis 直接收集）
         shell: bash
         run: |
           mkdir -p dist
