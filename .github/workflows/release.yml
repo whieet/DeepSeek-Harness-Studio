@@ -84,13 +84,18 @@ jobs:
       - name: 收集产物（Intel：zip .app；dmg/nsis 直接收集）
         shell: bash
         run: |
-          mkdir -p dist
-          cp ${{ matrix.artifact }} dist/ 2>/dev/null || true
-          if ! ls dist/* >/dev/null 2>&1 && [ -d "src-tauri/target/${{ matrix.target }}/release/bundle/macos" ]; then
-            cd "src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-            zip -qry "${{ github.workspace }}/dist/DeepSeek.Harness_${{ github.ref_name }}_${{ matrix.target }}.app.zip" "DeepSeek Harness.app"
+          set -e
+          mkdir -p "${{ github.workspace }}/dist"
+          BUNDLE_DIR="${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/bundle"
+          APP_DIR="${{ github.workspace }}/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          ZIP_OUT="${{ github.workspace }}/dist/DeepSeek.Harness_${{ github.ref_name }}_${{ matrix.target }}.app.zip"
+          if [ "${{ matrix.bundles }}" = "app" ]; then
+            test -d "${{ APP_DIR }}/DeepSeek Harness.app"
+            zip -qry "${{ ZIP_OUT }}" "${{ APP_DIR }}/DeepSeek Harness.app"
+          else
+            cp ${{ matrix.artifact }} "${{ github.workspace }}/dist/"
           fi
-          ls -la dist/
+          ls -la "${{ github.workspace }}/dist/"
 
       - uses: actions/upload-artifact@v4
         with:
