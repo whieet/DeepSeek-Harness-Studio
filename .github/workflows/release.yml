@@ -1,0 +1,73 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon
+            target: aarch64-apple-darwin
+            artifact: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          - os: macos-13          # Intel
+            target: x86_64-apple-darwin
+            artifact: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+          - os: windows-latest    # Windows x64
+            target: x86_64-pc-windows-msvc
+            artifact: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 打包运行时（Node 侧车 + dsh 闭包 + 冒烟自检）
+        run: node scripts/stage-runtime.mjs
+
+      - name: 构建（${{ matrix.target }}）
+        run: pnpm tauri build --target ${{ matrix.target }}
+
+      # 签名/公证占位（阶段二）：配置 APPLE_CERTIFICATE* / WINDOWS_CERTIFICATE 后启用。
+      # - name: macOS 签名与公证
+      #   if: runner.os == 'macOS'
+      #   run: pnpm tauri build --target ${{ matrix.target }} --bundles dmg --config bundle.macOS.signingIdentity=...
+
+      - name: 收集产物
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp ${{ matrix.artifact }} dist/ || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
