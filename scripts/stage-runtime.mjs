@@ -89,18 +89,58 @@ async function downloadNode() {
 }
 
 // ── 2) dsh 运行时闭包 ─────────────────────────────────────────────────────────
-// Windows 上 npm 是 npm.cmd：spawnSync 不带 shell 解析不到，必须显式指名。
-const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+// npm 调用统一走这里：
+// - Windows 上 npm 是 npm.cmd，Node 因 CVE-2024-27980 禁止无 shell 直接 spawn，
+//   故优先用 node 直接执行 npm-cli.js；
+// - npm-cli.js 位置优先按 node 安装布局推算（setup-node/win 官方包），推算不到时
+//   用一次轻量 shell 探测（npm root -g）定位（如 Homebrew 的 Cellar 布局）；
+// - CI 大闭包（450+ 包）解析吃内存，给 npm 子进程加大 V8 堆并限制并发套接字。
+function npmCliJsPath() {
+  const relativeCli = join("node_modules", "npm", "bin", "npm-cli.js");
+  const candidates = process.platform === "win32"
+    ? [join(dirname(process.execPath), relativeCli)]
+    : [
+        join(dirname(process.execPath), "..", "lib", relativeCli),
+        join(dirname(process.execPath), relativeCli)
+      ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  try {
+    const globalRoot = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      shell: process.platform === "win32"
+    }).trim();
+    const viaRoot = join(globalRoot, "npm", "bin", "npm-cli.js");
+    if (existsSync(viaRoot)) return viaRoot;
+  } catch {
+    // 探测失败则交给 shell 兜底
+  }
+  return null;
+}
+
+function runNpm(args) {
+  const cli = npmCliJsPath();
+  const nodeOptions = ((process.env.NODE_OPTIONS || "") + " --max-old-space-size=5120").trim();
+  const env = { ...process.env, NODE_OPTIONS: nodeOptions };
+  if (cli) {
+    execFileSync(process.execPath, [cli, ...args], { stdio: "inherit", env });
+  } else {
+    log("未定位到 npm-cli.js，回退 shell 方式调用 npm");
+    execFileSync("npm", args, { stdio: "inherit", env, shell: process.platform === "win32" });
+  }
+}
 
 function installRuntime() {
   rmSync(join(runtimeDir, "node_modules"), { recursive: true, force: true });
   rmSync(join(runtimeDir, "package.json"), { force: true });
   mkdirSync(runtimeDir, { recursive: true });
   log("npm install " + PKG + "@" + DSH_VERSION + "（运行时闭包，omit=dev）…");
-  execFileSync(npmCommand, [
+  runNpm([
     "install", "--omit=dev", "--no-audit", "--no-fund", "--loglevel=warn",
+    "--maxsockets", "10",
     "--prefix", runtimeDir, PKG + "@" + DSH_VERSION
-  ], { stdio: "inherit" });
+  ]);
   const binJs = join(runtimeDir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
   if (!existsSync(binJs)) {
     console.error("运行时闭包缺少 " + binJs);
@@ -109,9 +149,7 @@ function installRuntime() {
   if (process.platform === "win32") {
     // Windows 上 koffi 依赖 install 脚本落位原生预编译产物；显式 rebuild 确保不依赖 npm allowScripts 行为。
     log("npm rebuild koffi（确保原生预编译产物就位）…");
-    execFileSync(npmCommand, ["rebuild", "koffi", "--foreground-scripts", "--loglevel=warn", "--prefix", runtimeDir], {
-      stdio: "inherit"
-    });
+    runNpm(["rebuild", "koffi", "--foreground-scripts", "--loglevel=warn", "--prefix", runtimeDir]);
   }
   const beforeSize = dirSize(runtimeDir);
   pruneArtifacts(runtimeDir);
