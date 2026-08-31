@@ -678,6 +678,13 @@ async function renderGit() {
     host.innerHTML = '<div class="err">' + esc(e) + "</div>";
     return;
   }
+  // 面板数据与角标同源：renderGit 拿到 status 后顺手同步角标，避免两处分别请求产生不同步
+  try {
+    const n = st.staged.length + st.unstaged.length;
+    const badge = $("git-badge");
+    badge.textContent = String(n);
+    badge.classList.toggle("hidden", n === 0);
+  } catch (e) { /* noop */ }
   host.innerHTML = "";
 
   // ── 顶部：分支（点击弹菜单）+ 同步 ──
@@ -1096,6 +1103,8 @@ new ResizeObserver(() => {
   const collapsed = document.body.clientWidth <= 60;
   if (collapsed !== panelCollapsed) applyCollapse(collapsed);
 }).observe(document.body);
+
+window.addEventListener("focus", () => { if (!panelCollapsed) refreshAll(); });
 
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") { closeCtx(); return; }
