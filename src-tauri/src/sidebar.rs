@@ -462,6 +462,36 @@ pub struct SearchMatch {
     pub preview: String,
 }
 
+/// 分支信息。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitBranch {
+    pub name: String,
+    pub kind: String,
+    pub current: bool,
+    pub upstream: String,
+}
+
+/// 提交信息。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitInfo {
+    pub hash: String,
+    pub short: String,
+    pub author: String,
+    pub time: i64,
+    pub subject: String,
+    pub refs: String,
+}
+
+/// 提交内文件。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFile {
+    pub status: String,
+    pub path: String,
+}
+
 /// 文件名/目录名命中（相对路径 + 种类）。
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -945,6 +975,118 @@ pub fn git_diff_file(app: AppHandle, path: String, staged: bool) -> Result<Strin
     args.push("--");
     args.push(&path);
     git(&root, &args)
+}
+
+
+/// 初始化 git 仓库（非仓库目录时）。
+#[tauri::command]
+pub fn git_init(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    if root.join(".git").exists() {
+        return Ok(());
+    }
+    git(&root, &["init"]).map(|_| ())
+}
+
+/// 分支列表（本地 + 远程），当前分支置首标记。
+#[tauri::command]
+pub fn git_branches(app: AppHandle) -> Result<Vec<GitBranch>, String> {
+    let root = workspace_root(&app)?;
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
+    let raw = git(&root, &["branch", "-a", "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)"])?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let mut parts = line.split(' ');
+        let head = parts.next().unwrap_or(" ").trim() == "*";
+        let name = parts.next().unwrap_or("").trim().to_string();
+        if name.is_empty() || name == "HEAD" { continue; }
+        let upstream = parts.next().unwrap_or("").trim().to_string();
+        let kind = if name.starts_with("remotes/") { "remote" } else { "local" };
+        let display = name.strip_prefix("remotes/").unwrap_or(&name).to_string();
+        out.push(GitBranch { name: display, kind: kind.to_string(), current: head, upstream });
+    }
+    out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
+    Ok(out)
+}
+
+/// 切换分支；new_branch 为 true 时先创建。
+#[tauri::command]
+pub fn git_checkout(app: AppHandle, branch: String, new_branch: bool) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err(String::from("分支名不能为空"));
+    }
+    let mut args: Vec<&str> = if new_branch { vec!["checkout", "-b"] } else { vec!["checkout"] };
+    args.push(branch);
+    git(&root, &args).map(|_| ())
+}
+
+/// 提交历史（最近 max 条）。
+#[tauri::command]
+pub fn git_log(app: AppHandle, max: Option<usize>) -> Result<Vec<GitCommitInfo>, String> {
+    let root = workspace_root(&app)?;
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
+    let max = max.unwrap_or(50).clamp(1, 500);
+    let max_s = max.to_string();
+    let sep: char = '';
+    let fmt_str: String = ["%H", "%h", "%an", "%at", "%s", "%D"].join(&sep.to_string());
+    let fmt_arg = format!("--pretty=format:{}", fmt_str);
+    let max_arg = format!("--max-count={}", max_s);
+    let raw = git(&root, &["log", &fmt_arg, &max_arg])?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let parts: Vec<&str> = line.split(sep).collect();
+        if parts.len() < 5 { continue; }
+        let refs = parts.get(5).unwrap_or(&"").to_string();
+        out.push(GitCommitInfo {
+            hash: parts[0].to_string(),
+            short: parts[1].to_string(),
+            author: parts[2].to_string(),
+            time: parts[3].parse::<i64>().unwrap_or(0),
+            subject: parts[4].to_string(),
+            refs,
+        });
+    }
+    Ok(out)
+}
+
+/// 某提交的改动文件列表（show --name-status）。
+#[tauri::command]
+pub fn git_commit_files(app: AppHandle, hash: String) -> Result<Vec<GitCommitFile>, String> {
+    let root = workspace_root(&app)?;
+    let raw = git(&root, &["show", "--name-status", "--format=", &hash])?;
+    let mut out = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() { continue; }
+        let mut parts = line.split('\t');
+        let status = parts.next().unwrap_or("").to_string();
+        let path = parts.next().unwrap_or("").to_string();
+        if path.is_empty() { continue; }
+        out.push(GitCommitFile { status, path });
+    }
+    Ok(out)
+}
+
+/// 某提交的完整 diff（给查看器）。
+#[tauri::command]
+pub fn git_commit_diff(app: AppHandle, hash: String) -> Result<String, String> {
+    let root = workspace_root(&app)?;
+    git(&root, &["show", "--no-color", "--format=", &hash])
+}
+
+/// 撤销某提交（revert，生成反向提交，安全）。
+#[tauri::command]
+pub fn git_revert(app: AppHandle, hash: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    git(&root, &["revert", "--no-edit", &hash]).map(|_| ())
 }
 
 // ── 侧栏窗口控制与工作区事件 ─────────────────────────────────────────────────

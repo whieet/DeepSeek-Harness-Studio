@@ -65,6 +65,13 @@ fn main() {
             sidebar::git_push,
             sidebar::git_pull,
             sidebar::git_diff_file,
+            sidebar::git_init,
+            sidebar::git_branches,
+            sidebar::git_checkout,
+            sidebar::git_log,
+            sidebar::git_commit_files,
+            sidebar::git_commit_diff,
+            sidebar::git_revert,
             sidebar::set_sidebar_width,
             sidebar::toggle_sidebar,
             sidebar::open_viewer

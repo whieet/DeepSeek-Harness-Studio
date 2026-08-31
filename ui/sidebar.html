@@ -52,6 +52,25 @@
   .caret svg.anticon { width: 10px; height: 10px; }
   .path-hit svg.anticon, .filegroup-head svg.anticon, .tree-line svg.anticon { flex: none; }
   .path-hit { display: flex; gap: 6px; align-items: center; padding: 3px 10px; cursor: pointer; }
+  .branch-head { display: flex; gap: 8px; align-items: center; padding: 4px 10px; cursor: pointer; }
+  .branch-head:hover { background: #ffffff0d; }
+  .branch-head .branch-name { display: flex; gap: 6px; align-items: center; font-weight: 600; }
+  .branch-head .caret svg.anticon { width: 10px; height: 10px; }
+  .branch-row { display: flex; gap: 6px; align-items: center; padding: 3px 10px 3px 22px; cursor: pointer; }
+  .branch-row:hover { background: #ffffff0d; }
+  .branch-row.current { color: var(--acc); font-weight: 600; }
+  .newbranch-box { display: flex; gap: 6px; padding: 6px 10px; }
+  .newbranch-box input { flex: 1; background: #141518; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 4px 8px; font: inherit; outline: none; }
+  .commit-item { padding: 4px 10px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .commit-item:hover { background: #ffffff0d; }
+  .commit-head { display: flex; gap: 8px; align-items: baseline; }
+  .commit-head .cshort { font-family: ui-monospace, Menlo, monospace; color: #5a8bd8; flex: none; }
+  .commit-head .csubj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmeta { color: var(--dim); font-size: 11px; margin-top: 2px; }
+  .commit-files { padding: 2px 0 4px 14px; }
+  .commit-file { display: flex; gap: 6px; padding: 2px 4px; cursor: pointer; font-family: ui-monospace, Menlo, monospace; font-size: 11px; border-radius: 4px; }
+  .commit-file:hover { background: #ffffff0d; }
+  .commit-file .st { color: #b8b8b8; width: 12px; flex: none; }
   .path-hit:hover { background: #ffffff0d; }
   .path-hit .pkind { color: var(--dim); font-size: 11px; }
   .tree-line { display: flex; align-items: center; gap: 5px; padding: 2px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; }
@@ -559,7 +578,14 @@ async function renderGit() {
   const host = $("view-git");
   if (!wsInfo) { host.innerHTML = ""; return; }
   if (!wsInfo.isGitRepo) {
-    host.innerHTML = '<div class="msg">当前目录不是 git 仓库。<br>可在终端执行 <code>git init</code> 后重试。</div>';
+    host.innerHTML = '<div class="msg">当前目录不是 git 仓库。</div><div style="padding:10px"><button id="git-init-btn" class="linkbtn">初始化仓库</button></div><div id="git-toast"></div>';
+    $("git-init-btn").onclick = async () => {
+      try {
+        await invoke("git_init");
+        toast("已初始化 git 仓库", "ok");
+        await refreshAll();
+      } catch (e) { toast(String(e), "err"); }
+    };
     return;
   }
   if (wsInfo.gitMissing) {
@@ -657,7 +683,136 @@ async function renderGit() {
   });
   $("push-btn").onclick = () => act("git_push");
   $("pull-btn").onclick = () => act("git_pull");
+  buildBranchPanel(host, st.branch);
+  buildHistoryPanel(host);
+  const ib = $("git-init-btn");
+  if (ib) ib.onclick = async () => {
+    try {
+      await invoke("git_init");
+      toast("已初始化 git 仓库", "ok");
+      await refreshAll();
+    } catch (e) { toast(String(e), "err"); }
+  };
 }
+// 分支面板：head 行点击展开，本地/远程分组，可切换/新建。
+async function buildBranchPanel(host, current) {
+  const row = document.createElement("div");
+  row.className = "branch-head";
+  row.innerHTML = '<span class="branch-name">' + esc(current) + '<span class="caret">' + icon("CaretDownOutlined") + "</span></span><span class=\"act\">切换分支</span>";
+  host.appendChild(row);
+  const box = document.createElement("div");
+  box.style.display = "none";
+  host.appendChild(box);
+  row.addEventListener("click", async () => {
+    if (box.style.display === "none") {
+      box.style.display = "";
+      if (!box.dataset.loaded) {
+        box.dataset.loaded = "1";
+        await loadBranchList(box, current);
+      }
+    } else box.style.display = "none";
+  });
+}
+
+async function loadBranchList(box, current) {
+  box.innerHTML = '<div class="msg">加载中…</div>';
+  let branches;
+  try { branches = await invoke("git_branches"); } catch (e) { box.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
+  box.innerHTML = "";
+  const newBox = document.createElement("div");
+  newBox.className = "newbranch-box";
+  newBox.innerHTML = '<input id="new-branch-input" placeholder="新分支名…" />';
+  const btn = document.createElement("button");
+  btn.className = "linkbtn";
+  btn.textContent = "新建并切换";
+  btn.onclick = async () => {
+    const name = newBox.querySelector("input").value.trim();
+    if (!name) return;
+    try { await invoke("git_checkout", { branch: name, newBranch: true }); toast("已创建并切换到 " + name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+  };
+  newBox.appendChild(btn);
+  box.appendChild(newBox);
+  newBox.querySelector("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") btn.click(); });
+  for (const kind of ["local", "remote"]) {
+    const list = branches.filter((b) => b.kind === kind);
+    if (!list.length) continue;
+    const sh = document.createElement("div");
+    sh.className = "section-head";
+    sh.textContent = kind === "local" ? "本地分支" : "远程分支";
+    box.appendChild(sh);
+    for (const b of list) {
+      const row = document.createElement("div");
+      row.className = "branch-row" + (b.current ? " current" : "");
+      row.innerHTML = icon(b.current ? "CaretRightOutlined" : "BranchesOutlined") + ' <span>' + esc(b.name) + "</span>" + (b.upstream ? ' <span class="pkind">' + esc(b.upstream) + "</span>" : "");
+      if (!b.current) row.addEventListener("click", async () => {
+        try { await invoke("git_checkout", { branch: b.name, newBranch: false }); toast("已切换到 " + b.name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+      });
+      box.appendChild(row);
+    }
+  }
+}
+
+// 历史面板：按钮展开/收起，条目点击展开文件列表，文件点击查看该提交 diff。
+async function buildHistoryPanel(host) {
+  const sh = document.createElement("div");
+  sh.className = "section-head";
+  sh.innerHTML = icon("HistoryOutlined") + " <span>提交历史</span>";
+  sh.style.cursor = "pointer";
+  host.appendChild(sh);
+  const box = document.createElement("div");
+  box.style.display = "none";
+  host.appendChild(box);
+  sh.addEventListener("click", async () => {
+    if (box.style.display === "none") {
+      box.style.display = "";
+      if (!box.dataset.loaded) { box.dataset.loaded = "1"; await loadHistory(box); }
+    } else box.style.display = "none";
+  });
+}
+
+async function loadHistory(box) {
+  box.innerHTML = '<div class="msg">加载中…</div>';
+  let commits;
+  try { commits = await invoke("git_log", { max: 50 }); } catch (e) { box.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
+  box.innerHTML = "";
+  if (!commits.length) { box.innerHTML = '<div class="msg">暂无提交</div>'; return; }
+  for (const c of commits) {
+    const item = document.createElement("div");
+    item.className = "commit-item";
+    const date = new Date(c.time * 1000);
+    const dateStr = date.getMonth() + 1 + "/" + date.getDate() + " " + String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
+    item.innerHTML = '<div class="commit-head"><span class="cshort">' + esc(c.short) + '</span><span class="csubj">' + esc(c.subject) + '</span></div><div class="cmeta">' + esc(c.author) + " · " + dateStr + (c.refs ? " · " + esc(c.refs) : "") + "</div>";
+    const files = document.createElement("div");
+    files.className = "commit-files hidden";
+    item.appendChild(files);
+    item.querySelector(".commit-head").addEventListener("click", async () => {
+      if (files.classList.contains("hidden")) {
+        files.classList.remove("hidden");
+        if (!files.dataset.loaded) {
+          files.dataset.loaded = "1";
+          let fl;
+          try { fl = await invoke("git_commit_files", { hash: c.hash }); } catch (e) { files.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
+          files.innerHTML = "";
+          for (const f of fl) {
+            const fr = document.createElement("div");
+            fr.className = "commit-file";
+            fr.innerHTML = '<span class="st">' + esc(f.status) + '</span><span>' + esc(f.path) + "</span>";
+            fr.addEventListener("click", async () => {
+              try {
+                const diff = await invoke("git_commit_diff", { hash: c.hash });
+                invoke("open_viewer", { path: f.path, mode: "text", content: diff });
+              } catch (e) { toast(String(e), "err"); }
+            });
+            files.appendChild(fr);
+          }
+        }
+      } else files.classList.add("hidden");
+    });
+    box.appendChild(item);
+  }
+}
+
+
 function toast(text, cls) {
   const el = $("git-toast");
   if (!el) return;
@@ -687,9 +842,23 @@ function switchTab(name) {
   if (name === "git") renderGit();
   if (name === "search") setTimeout(() => $("search-input").focus(), 50);
 }
-$("tab-files").onclick = () => switchTab("files");
-$("tab-search").onclick = () => switchTab("search");
-$("tab-git").onclick = () => switchTab("git");
+// tab 图标点击：切面板；再次点击已激活图标 → 收起面板；收起状态点击 → 展开并切换。
+async function onTabClick(name) {
+  if (panelCollapsed) {
+    switchTab(name);
+    try { applyCollapse(await invoke("toggle_sidebar")); } catch (e) { alert(String(e)); }
+    return;
+  }
+  if (activeTab === name) {
+    // 已激活：收起（保留激活态高亮）
+    try { applyCollapse(await invoke("toggle_sidebar")); } catch (e) { alert(String(e)); }
+    return;
+  }
+  switchTab(name);
+}
+$("tab-files").onclick = () => onTabClick("files");
+$("tab-search").onclick = () => onTabClick("search");
+$("tab-git").onclick = () => onTabClick("git");
 $("head-refresh").onclick = async () => {
   if (activeTab === "files") await refreshAll();
   else if (activeTab === "git") { await refreshAll(); }
