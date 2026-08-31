@@ -575,7 +575,19 @@ new ResizeObserver(() => {
   if (collapsed !== panelCollapsed) applyCollapse(collapsed);
 }).observe(document.body);
 
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeCtx(); });
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") { closeCtx(); return; }
+  // ⌘1/⌘2/⌘3 切换文件/搜索/Git 面板；⌘F 聚焦搜索框。
+  if (!(ev.metaKey || ev.ctrlKey)) return;
+  if (ev.key === "1") { switchTab("files"); ev.preventDefault(); }
+  else if (ev.key === "2") { switchTab("search"); ev.preventDefault(); }
+  else if (ev.key === "3") { switchTab("git"); ev.preventDefault(); }
+  else if (ev.key === "f" || ev.key === "F") {
+    switchTab("search");
+    requestAnimationFrame(() => $("search-input").focus());
+    ev.preventDefault();
+  }
+});
 
 // ── 启动 ──
 listen("dsh-sidebar-workspace", () => loadWorkspace());

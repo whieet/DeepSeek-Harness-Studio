@@ -448,12 +448,12 @@ pub fn fs_reveal(app: AppHandle, path: String) -> Result<(), String> {
 
 // ── 搜索 ─────────────────────────────────────────────────────────────────────
 
-const SEARCH_MAX_FILES: usize = 200;
+const SEARCH_MAX_FILES: usize = 2000;
 const SEARCH_MAX_MATCHES: usize = 1000;
 const SEARCH_FILE_SIZE_LIMIT: u64 = 1_000_000;
 const SEARCH_MAX_PER_FILE: usize = 50;
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchMatch {
     pub file: String,
@@ -462,24 +462,30 @@ pub struct SearchMatch {
     pub preview: String,
 }
 
-fn walk_files(dir: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
-    if out.len() >= SEARCH_MAX_FILES * 4 || stop.load(Ordering::Relaxed) {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            if !is_ignored_dir(&name) && !name.starts_with(".") {
-                walk_files(&path, out, stop);
-            }
-        } else if path.is_file() {
-            let small = std::fs::metadata(&path).map(|m| m.len() <= SEARCH_FILE_SIZE_LIMIT).unwrap_or(false);
-            if small {
-                out.push(path);
-                if out.len() >= SEARCH_MAX_FILES * 4 {
-                    return;
+/// 广度优先收集可搜索文件：浅层文件先扫（README/配置先于深层依赖），总量截断。
+fn walk_files(root: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
+    let cap = SEARCH_MAX_FILES * 5;
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(root.to_path_buf());
+    while let Some(dir) = queue.pop_front() {
+        if out.len() >= cap || stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if !is_ignored_dir(&name) && !name.starts_with('.') {
+                    queue.push_back(path);
+                }
+            } else if path.is_file() {
+                let small = std::fs::metadata(&path).map(|m| m.len() <= SEARCH_FILE_SIZE_LIMIT).unwrap_or(false);
+                if small {
+                    out.push(path);
+                    if out.len() >= cap {
+                        return;
+                    }
                 }
             }
         }
@@ -487,20 +493,29 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
 }
 
 #[tauri::command]
-pub fn search_workspace(
+pub async fn search_workspace(
     app: AppHandle,
     query: String,
     case_sensitive: bool,
 ) -> Result<Vec<SearchMatch>, String> {
     let root = workspace_root(&app)?;
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = root.canonicalize().map_err(|e| e.to_string())?;
+        search_in_dir(&root, &query, case_sensitive)
+    })
+    .await
+    .map_err(|e| format!("搜索任务失败：{}", e))?
+}
+
+/// 核心扫描逻辑（供命令与测试共用）：广度优先收集 → 逐文件子串匹配。
+fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Vec<SearchMatch>, String> {
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let needle = if case_sensitive { query } else { query.to_lowercase() };
+    let needle = if case_sensitive { query.to_string() } else { query.to_lowercase() };
     let stop = AtomicBool::new(false);
     let mut files = Vec::new();
-    walk_files(&root, &mut files, &stop);
+    walk_files(root, &mut files, &stop);
 
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut files_scanned = 0usize;
@@ -518,9 +533,11 @@ pub fn search_workspace(
         }
         let text = String::from_utf8_lossy(&content).into_owned();
         content.clear();
-        let hay = if case_sensitive { text.clone() } else { text.to_lowercase() };
+        // 预览取原文；匹配用按需大小写折叠的副本。
+        let lower = if case_sensitive { None } else { Some(text.to_lowercase()) };
+        let hay = lower.as_deref().unwrap_or(&text);
         let rel = file
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .unwrap_or(&file)
             .display()
             .to_string();
@@ -529,14 +546,13 @@ pub fn search_workspace(
         while let Some(pos) = hay[offset..].find(&needle) {
             let abs = offset + pos;
             let line_no = hay[..abs].matches(0x0A as char).count() + 1;
-            let col = abs - hay[..abs].rfind(0x0A as char).map(|i| i + 1).unwrap_or(0);
             let line_start = hay[..abs].rfind(0x0A as char).map(|i| i + 1).unwrap_or(0);
             let line_end = hay[abs..].find(0x0A as char).map(|i| abs + i).unwrap_or(hay.len());
-            let preview: String = hay[line_start..line_end].chars().take(200).collect();
+            let preview: String = text[line_start..line_end].chars().take(200).collect();
             matches.push(SearchMatch {
                 file: rel.clone(),
                 line: line_no,
-                col,
+                col: abs - line_start,
                 preview,
             });
             per_file += 1;
@@ -547,6 +563,73 @@ pub fn search_workspace(
         }
     }
     Ok(matches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_finds_and_previews_original_case() {
+        let dir = std::env::temp_dir().join(format!("dsh-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "Hello Bridge\nsecond line\n").unwrap();
+        std::fs::write(dir.join("sub").join("b.md"), "nothing here\nBRIDGE inside\n").unwrap();
+
+        // 大小写不敏感：两文件都命中，预览保留原文大小写
+        let hits = search_in_dir(&dir, "bridge", false).unwrap();
+        assert_eq!(hits.len(), 2, "应命中两处：{:?}", hits);
+        assert!(hits[0].preview.starts_with("Hello Bridge"), "预览应为原文：{}", hits[0].preview);
+        assert_eq!(hits[0].line, 1);
+        assert!(hits[1].preview.starts_with("BRIDGE inside"), "预览应为原文：{}", hits[1].preview);
+        assert_eq!(hits[1].file.replace('\\', "/"), "sub/b.md");
+
+        // 大小写敏感：只命中原文大写 BRIDGE
+        let cs = search_in_dir(&dir, "BRIDGE", true).unwrap();
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].line, 2);
+
+        // 空查询
+        assert!(search_in_dir(&dir, "", false).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_real_project_finds_bridge() {
+        // 真实仓库冒烟：工作区=本仓库源码目录，"sidebar-bridge" 必有命中（插件目录与引用）。
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        let hits = search_in_dir(&root, "sidebar-bridge", false).unwrap();
+        assert!(!hits.is_empty(), "真实仓库应命中 sidebar-bridge");
+        assert!(
+            hits.iter().any(|h| h.file.contains("dsh-sidebar-bridge") || h.file.contains("sidebar.rs") || h.file.contains("main.rs")),
+            "命中应来自插件/壳源码：{:?}",
+            hits.iter().take(5).map(|h| &h.file).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn walk_is_breadth_first_and_skips_ignored() {
+        let dir = std::env::temp_dir().join(format!("dsh-walk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("deep").join("deeper")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(dir.join("root.txt"), "x").unwrap();
+        std::fs::write(dir.join("deep").join("mid.txt"), "x").unwrap();
+        std::fs::write(dir.join("deep").join("deeper").join("low.txt"), "x").unwrap();
+        std::fs::write(dir.join("node_modules").join("pkg.js"), "x").unwrap();
+
+        let stop = AtomicBool::new(false);
+        let mut out = Vec::new();
+        walk_files(&dir, &mut out, &stop);
+        let names: Vec<String> = out
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // BFS：浅层先于深层；node_modules 被忽略
+        assert_eq!(names, vec!["root.txt", "mid.txt", "low.txt"], "顺序应为浅层优先：{:?}", names);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 // ── Git ──────────────────────────────────────────────────────────────────────
