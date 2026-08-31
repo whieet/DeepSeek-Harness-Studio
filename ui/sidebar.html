@@ -403,48 +403,90 @@ function renderSearch(ms) {
   stats.textContent = parts.join(" · ") + " · " + (ms / 1000).toFixed(2) + "s" + (truncated ? " · 已截断" : "");
   host.appendChild(stats);
 
-  // 路径命中组（文件名/目录名）
-  if (paths.length) {
-    const head = document.createElement("div");
-    head.className = "section-head";
-    head.textContent = "文件与目录名";
-    host.appendChild(head);
-    for (const ph of paths) {
+  // 统一集合：path -> { kind, hits }（路径命中与内容命中合并，不做分类分组）
+  const unified = new Map();
+  for (const ph of paths) unified.set(ph.path, { kind: ph.kind, hits: [] });
+  for (const [file, list] of byFile) {
+    const ex = unified.get(file);
+    if (ex) ex.hits = list;
+    else unified.set(file, { kind: "file", hits: list });
+  }
+  const sorted = [...unified.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
+  if (searchView === "tree") renderUnifiedTree(host, sorted);
+  else renderUnifiedList(host, sorted);
+}
+
+// 列表平铺：单一流，按路径排序；目录一行，文件头 + 内容行。
+function renderUnifiedList(host, sorted) {
+  for (const [path, info] of sorted) {
+    if (info.kind === "dir") {
       const row = document.createElement("div");
       row.className = "path-hit";
-      const icon = ph.kind === "dir" ? "📁" : "📄";
-      row.innerHTML = icon + ' <span>' + highlight(ph.path, searchQuery, caseSensitive) + '</span> <span class="pkind">' + (ph.kind === "dir" ? "目录" : "文件") + "</span>";
-      row.addEventListener("click", () => {
-        if (ph.kind === "file") openPath(ph.path, 0);
-        else {
-          // 目录：切到文件 tab 并展开该目录
-          switchTab("files");
-          expandTo(ph.path);
-        }
-      });
+      row.innerHTML = '📁 <span>' + highlight(path, searchQuery, caseSensitive) + '</span> <span class="pkind">目录</span>';
+      row.addEventListener("click", () => { switchTab("files"); expandTo(path); });
       host.appendChild(row);
+      continue;
     }
-  }
-
-  // 内容命中组
-  if (matches.length) {
-    const head = document.createElement("div");
-    head.className = "section-head";
-    head.textContent = searchView === "tree" ? "内容（树视图）" : "内容";
-    host.appendChild(head);
-    if (searchView === "tree") renderMatchesTree(host, byFile);
-    else renderMatchesList(host, byFile);
+    const gh = document.createElement("div");
+    gh.className = "filegroup-head";
+    gh.innerHTML = '📄 ' + highlight(path, searchQuery, caseSensitive) + (info.hits.length ? ' <span style="color:var(--dim)">(' + info.hits.length + ")</span>" : "");
+    host.appendChild(gh);
+    for (const m of info.hits) appendMatchRow(host, path, m, 22);
   }
 }
 
-function renderMatchesList(host, byFile) {
-  for (const [file, list] of byFile) {
-    const gh = document.createElement("div");
-    gh.className = "filegroup-head";
-    gh.innerHTML = '📄 ' + highlight(file, searchQuery, caseSensitive) + ' <span style="color:var(--dim)">(' + list.length + ")</span>";
-    host.appendChild(gh);
-    for (const m of list) appendMatchRow(host, file, m, 22);
+// 树视图：统一集合构建成嵌套树；空目录（仅路径命中）也渲染，文件节点下挂内容行。
+function renderUnifiedTree(host, sorted) {
+  const root = { dirs: new Map(), files: new Map() };
+  const ensureDir = (node, seg) => {
+    if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: new Map(), hit: false });
+    return node.dirs.get(seg);
+  };
+  for (const [path, info] of sorted) {
+    const segs = path.split("/");
+    let node = root;
+    for (let i = 0; i < segs.length - 1; i++) node = ensureDir(node, segs[i]);
+    const name = segs[segs.length - 1];
+    if (info.kind === "dir") ensureDir(node, name).hit = true;
+    else node.files.set(name, info);
   }
+  const renderNode = (node, prefix, depth, host) => {
+    for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const count = subtreeCount(child);
+      const full = prefix + name;
+      const line = document.createElement("div");
+      line.className = "tree-line";
+      line.style.paddingLeft = 10 + depth * 14 + "px";
+      line.innerHTML = '<span class="tw">▾</span>📁 <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (count ? '<span class="cnt">(' + count + ")</span>" : "");
+      const box = document.createElement("div");
+      line.addEventListener("click", () => {
+        const open = box.style.display !== "none";
+        box.style.display = open ? "none" : "";
+        line.querySelector(".tw").textContent = open ? "▸" : "▾";
+      });
+      host.appendChild(line);
+      host.appendChild(box);
+      renderNode(child, full + "/", depth + 1, box);
+    }
+    for (const [name, info] of [...node.files.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const rel = prefix + name;
+      const fl = document.createElement("div");
+      fl.className = "tree-line";
+      fl.style.paddingLeft = 10 + depth * 14 + "px";
+      fl.innerHTML = '📄 <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (info.hits.length ? '<span class="cnt">(' + info.hits.length + ")</span>" : "");
+      fl.addEventListener("click", () => openPath(rel, info.hits[0] ? info.hits[0].line : 0));
+      host.appendChild(fl);
+      for (const m of info.hits) {
+        const mr = document.createElement("div");
+        mr.className = "tree-match";
+        mr.innerHTML = '<span class="ln" style="color:#5a8bd8;margin-right:6px">' + m.line + '</span>' + highlight(m.preview, searchQuery, caseSensitive);
+        mr.addEventListener("click", (ev) => { ev.stopPropagation(); openPath(rel, m.line); });
+        host.appendChild(mr);
+      }
+    }
+  };
+  renderNode(root, "", 0, host);
 }
 
 function appendMatchRow(host, file, m, pad) {
@@ -454,58 +496,6 @@ function appendMatchRow(host, file, m, pad) {
   row.style.paddingLeft = pad + "px";
   row.addEventListener("click", () => openPath(file, m.line));
   host.appendChild(row);
-}
-
-// 树视图：matches 按目录层级嵌套；目录行可折叠，命中行点击打开查看器。
-function renderMatchesTree(host, byFile) {
-  // 构建 { dirs: Map(name->node), files: Map(name->{hits}) }
-  const root = { dirs: new Map(), files: new Map() };
-  for (const [file, list] of byFile) {
-    const segs = file.split("/");
-    let node = root;
-    for (let i = 0; i < segs.length - 1; i++) {
-      const seg = segs[i];
-      if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: new Map() });
-      node = node.dirs.get(seg);
-    }
-    node.files.set(segs[segs.length - 1], list);
-  }
-  // 记录每层文件的完整相对路径：渲染时传入前缀。
-  const renderWithPrefix = (node, prefix, depth, host) => {
-    for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const count = subtreeCount(child);
-      const line = document.createElement("div");
-      line.className = "tree-line";
-      line.style.paddingLeft = 10 + depth * 14 + "px";
-      line.innerHTML = '<span class="tw">▾</span>📁 <span>' + highlight(name, searchQuery, caseSensitive) + '</span><span class="cnt">(' + count + ")</span>";
-      const box = document.createElement("div");
-      line.addEventListener("click", () => {
-        const open = box.style.display !== "none";
-        box.style.display = open ? "none" : "";
-        line.querySelector(".tw").textContent = open ? "▸" : "▾";
-      });
-      host.appendChild(line);
-      host.appendChild(box);
-      renderWithPrefix(child, prefix + name + "/", depth + 1, box);
-    }
-    for (const [name, list] of [...node.files.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const rel = prefix + name;
-      const fl = document.createElement("div");
-      fl.className = "tree-line";
-      fl.style.paddingLeft = 10 + depth * 14 + "px";
-      fl.innerHTML = '📄 <span>' + highlight(name, searchQuery, caseSensitive) + '</span><span class="cnt">(' + list.length + ")</span>";
-      fl.addEventListener("click", () => openPath(rel, list[0].line));
-      host.appendChild(fl);
-      for (const m of list) {
-        const mr = document.createElement("div");
-        mr.className = "tree-match";
-        mr.innerHTML = '<span class="ln" style="color:#5a8bd8;margin-right:6px">' + m.line + '</span>' + highlight(m.preview, searchQuery, caseSensitive);
-        mr.addEventListener("click", (ev) => { ev.stopPropagation(); openPath(rel, m.line); });
-        host.appendChild(mr);
-      }
-    }
-  };
-  renderWithPrefix(root, "", 0, host);
 }
 
 function subtreeCount(node) {
