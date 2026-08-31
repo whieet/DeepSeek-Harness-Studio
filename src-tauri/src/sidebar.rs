@@ -462,8 +462,26 @@ pub struct SearchMatch {
     pub preview: String,
 }
 
-/// 广度优先收集可搜索文件：浅层文件先扫（README/配置先于深层依赖），总量截断。
-fn walk_files(root: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
+/// 文件名/目录名命中（相对路径 + 种类）。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PathHit {
+    pub path: String,
+    pub kind: String, // "file" | "dir"
+}
+
+/// 搜索总输出：内容命中 + 路径命中。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOutcome {
+    pub matches: Vec<SearchMatch>,
+    pub paths: Vec<PathHit>,
+    pub truncated: bool,
+}
+
+/// 广度优先收集可搜索条目（文件与目录）：浅层先扫，总量截断。
+/// 目录同时入队遍历并记入 out（is_dir=true），供路径搜索；文件需满足大小限制才计入。
+fn walk_entries(root: &Path, out: &mut Vec<(PathBuf, bool)>, stop: &AtomicBool) {
     let cap = SEARCH_MAX_FILES * 5;
     let mut queue = std::collections::VecDeque::new();
     queue.push_back(root.to_path_buf());
@@ -477,19 +495,29 @@ fn walk_files(root: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
             let name = entry.file_name().to_string_lossy().into_owned();
             if path.is_dir() {
                 if !is_ignored_dir(&name) && !name.starts_with('.') {
+                    if out.len() < cap {
+                        out.push((path.clone(), true));
+                    }
                     queue.push_back(path);
                 }
             } else if path.is_file() {
                 let small = std::fs::metadata(&path).map(|m| m.len() <= SEARCH_FILE_SIZE_LIMIT).unwrap_or(false);
                 if small {
-                    out.push(path);
                     if out.len() >= cap {
                         return;
                     }
+                    out.push((path, false));
                 }
             }
         }
     }
+}
+
+/// 兼容包装：只要文件列表（内容扫描用）。
+fn walk_files(root: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
+    let mut entries = Vec::new();
+    walk_entries(root, &mut entries, stop);
+    out.extend(entries.into_iter().filter(|(_, is_dir)| !is_dir).map(|(p, _)| p));
 }
 
 #[tauri::command]
@@ -497,7 +525,7 @@ pub async fn search_workspace(
     app: AppHandle,
     query: String,
     case_sensitive: bool,
-) -> Result<Vec<SearchMatch>, String> {
+) -> Result<SearchOutcome, String> {
     let root = workspace_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -507,28 +535,57 @@ pub async fn search_workspace(
     .map_err(|e| format!("搜索任务失败：{}", e))?
 }
 
-/// 核心扫描逻辑（供命令与测试共用）：广度优先收集 → 逐文件子串匹配。
-fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Vec<SearchMatch>, String> {
+/// 路径命中上限（文件名/目录名匹配）。
+const SEARCH_MAX_PATHS: usize = 300;
+
+/// 核心扫描逻辑（供命令与测试共用）：
+/// 路径匹配（文件名/目录名，相对路径子串）+ 内容匹配（逐文件子串）。
+fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<SearchOutcome, String> {
     if query.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SearchOutcome { matches: Vec::new(), paths: Vec::new(), truncated: false });
     }
     let needle = if case_sensitive { query.to_string() } else { query.to_lowercase() };
     let stop = AtomicBool::new(false);
-    let mut files = Vec::new();
-    walk_files(root, &mut files, &stop);
+    let mut entries: Vec<(PathBuf, bool)> = Vec::new();
+    walk_entries(root, &mut entries, &stop);
+
+    // 路径命中：文件名与目录名（整条相对路径子串匹配，天然覆盖各级目录段）。
+    let mut paths: Vec<PathHit> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut path_truncated = false;
+    for (path, is_dir) in &entries {
+        let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
+        let hay = if case_sensitive { rel.clone() } else { rel.to_lowercase() };
+        if hay.contains(&needle) {
+            if paths.len() >= SEARCH_MAX_PATHS {
+                path_truncated = true;
+                break;
+            }
+            paths.push(PathHit {
+                path: rel,
+                kind: if *is_dir { "dir".into() } else { "file".into() },
+            });
+        }
+        if !*is_dir {
+            files.push(path.clone());
+        }
+    }
 
     let mut matches: Vec<SearchMatch> = Vec::new();
     let mut files_scanned = 0usize;
-    'outer: for file in files {
+    let mut content_truncated = false;
+    'outer: for file in &files {
         if matches.len() >= SEARCH_MAX_MATCHES {
+            content_truncated = true;
             break;
         }
-        let Ok(mut content) = std::fs::read(&file) else { continue };
+        let Ok(mut content) = std::fs::read(file) else { continue };
         if looks_binary(&content) {
             continue;
         }
         files_scanned += 1;
         if files_scanned > SEARCH_MAX_FILES {
+            content_truncated = true;
             break;
         }
         let text = String::from_utf8_lossy(&content).into_owned();
@@ -538,7 +595,7 @@ fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Vec<S
         let hay = lower.as_deref().unwrap_or(&text);
         let rel = file
             .strip_prefix(root)
-            .unwrap_or(&file)
+            .unwrap_or(file)
             .display()
             .to_string();
         let mut per_file = 0usize;
@@ -557,12 +614,13 @@ fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Vec<S
             });
             per_file += 1;
             if per_file >= SEARCH_MAX_PER_FILE || matches.len() >= SEARCH_MAX_MATCHES {
+                content_truncated = true;
                 continue 'outer;
             }
             offset = abs + needle.len();
         }
     }
-    Ok(matches)
+    Ok(SearchOutcome { matches, paths, truncated: path_truncated || content_truncated })
 }
 
 #[cfg(test)]
@@ -578,33 +636,52 @@ mod tests {
         std::fs::write(dir.join("sub").join("b.md"), "nothing here\nBRIDGE inside\n").unwrap();
 
         // 大小写不敏感：两文件都命中，预览保留原文大小写
-        let hits = search_in_dir(&dir, "bridge", false).unwrap();
-        assert_eq!(hits.len(), 2, "应命中两处：{:?}", hits);
-        assert!(hits[0].preview.starts_with("Hello Bridge"), "预览应为原文：{}", hits[0].preview);
-        assert_eq!(hits[0].line, 1);
-        assert!(hits[1].preview.starts_with("BRIDGE inside"), "预览应为原文：{}", hits[1].preview);
-        assert_eq!(hits[1].file.replace('\\', "/"), "sub/b.md");
+        let out = search_in_dir(&dir, "bridge", false).unwrap();
+        assert_eq!(out.matches.len(), 2, "应命中两处：{:?}", out.matches);
+        assert!(out.matches[0].preview.starts_with("Hello Bridge"), "预览应为原文：{}", out.matches[0].preview);
+        assert_eq!(out.matches[0].line, 1);
+        assert!(out.matches[1].preview.starts_with("BRIDGE inside"), "预览应为原文：{}", out.matches[1].preview);
+        assert_eq!(out.matches[1].file.replace('\\', "/"), "sub/b.md");
+
+        // 路径命中：a.txt（文件名）与 sub（目录名）……"bridge" 不在文件名里 → 路径命中应为空
+        assert!(out.paths.is_empty(), "bridge 不在路径中：{:?}", out.paths);
 
         // 大小写敏感：只命中原文大写 BRIDGE
         let cs = search_in_dir(&dir, "BRIDGE", true).unwrap();
-        assert_eq!(cs.len(), 1);
-        assert_eq!(cs[0].line, 2);
+        assert_eq!(cs.matches.len(), 1);
+        assert_eq!(cs.matches[0].line, 2);
+
+        // 文件名搜索：命中 a.txt；目录名搜索：命中 sub/
+        let byname = search_in_dir(&dir, "a.txt", false).unwrap();
+        assert_eq!(byname.paths.len(), 1);
+        assert_eq!(byname.paths[0].path, "a.txt");
+        assert_eq!(byname.paths[0].kind, "file");
+        let bydir = search_in_dir(&dir, "sub", false).unwrap();
+        assert!(bydir.paths.iter().any(|h| h.path == "sub" && h.kind == "dir"), "{:?}", bydir.paths);
 
         // 空查询
-        assert!(search_in_dir(&dir, "", false).unwrap().is_empty());
+        let empty = search_in_dir(&dir, "", false).unwrap();
+        assert!(empty.matches.is_empty() && empty.paths.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
 
     #[test]
     fn search_real_project_finds_bridge() {
         // 真实仓库冒烟：工作区=本仓库源码目录，"sidebar-bridge" 必有命中（插件目录与引用）。
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let hits = search_in_dir(&root, "sidebar-bridge", false).unwrap();
-        assert!(!hits.is_empty(), "真实仓库应命中 sidebar-bridge");
+        let out = search_in_dir(&root, "sidebar-bridge", false).unwrap();
+        assert!(!out.matches.is_empty(), "真实仓库应命中 sidebar-bridge");
         assert!(
-            hits.iter().any(|h| h.file.contains("dsh-sidebar-bridge") || h.file.contains("sidebar.rs") || h.file.contains("main.rs")),
+            out.matches.iter().any(|h| h.file.contains("dsh-sidebar-bridge") || h.file.contains("sidebar.rs") || h.file.contains("main.rs")),
             "命中应来自插件/壳源码：{:?}",
-            hits.iter().take(5).map(|h| &h.file).collect::<Vec<_>>()
+            out.matches.iter().take(5).map(|h| &h.file).collect::<Vec<_>>()
+        );
+        // 路径命中：dsh-sidebar-bridge 目录本身
+        assert!(
+            out.paths.iter().any(|p| p.kind == "dir" && p.path.contains("sidebar-bridge")),
+            "目录名应命中：{:?}",
+            out.paths.iter().take(5).map(|p| &p.path).collect::<Vec<_>>()
         );
     }
 

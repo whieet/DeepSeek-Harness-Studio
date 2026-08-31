@@ -44,8 +44,17 @@
   #search-box { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
   #search-input { flex: 1; background: #141518; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 5px 8px; font: inherit; outline: none; }
   #search-input:focus { border-color: var(--acc); }
-  #case-btn { border: 1px solid var(--line); background: none; color: var(--dim); border-radius: 6px; width: 30px; font-weight: 700; cursor: pointer; }
-  #case-btn.on { color: #fff; background: var(--acc); border-color: var(--acc); }
+  #case-btn, .viewtoggle { border: 1px solid var(--line); background: none; color: var(--dim); border-radius: 6px; width: 30px; font-weight: 700; cursor: pointer; }
+  #case-btn.on, .viewtoggle.active { color: #fff; background: var(--acc); border-color: var(--acc); }
+  .path-hit { display: flex; gap: 6px; align-items: center; padding: 3px 10px; cursor: pointer; }
+  .path-hit:hover { background: #ffffff0d; }
+  .path-hit .pkind { color: var(--dim); font-size: 11px; }
+  .tree-line { display: flex; align-items: center; gap: 5px; padding: 2px 10px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+  .tree-line:hover { background: #ffffff0d; }
+  .tree-line .tw { color: var(--dim); width: 10px; display: inline-block; }
+  .tree-line .cnt { color: var(--dim); font-size: 11px; }
+  .tree-match { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; padding: 1px 10px 1px 30px; cursor: pointer; white-space: nowrap; }
+  .tree-match:hover { background: #ffffff0d; }
   .mark { background: #6d5a15; color: #ffe9a8; border-radius: 2px; }
   .filegroup-head { display: flex; gap: 5px; align-items: center; padding: 3px 10px; font-weight: 600; background: #ffffff08; }
   .matchline { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
@@ -87,8 +96,10 @@
       <div id="view-files"></div>
       <div id="view-search" class="hidden">
         <div id="search-box">
-          <input id="search-input" placeholder="搜索工作区…（Enter 搜索）" />
+          <input id="search-input" placeholder="搜索内容 / 文件名 / 目录名…（Enter）" />
           <button id="case-btn" title="区分大小写">Aa</button>
+          <button id="view-list-btn" class="viewtoggle active" title="列表视图">☰</button>
+          <button id="view-tree-btn" class="viewtoggle" title="树视图">🌳</button>
         </div>
         <div id="search-results"><div class="msg">输入关键词开始搜索</div></div>
       </div>
@@ -345,6 +356,10 @@ $("case-btn").onclick = () => {
 $("search-input").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") runSearch();
 });
+let searchOut = null;   // 最近一次 SearchOutcome
+let searchQuery = "";   // 最近一次关键词
+let searchView = "list"; // "list" | "tree"
+
 async function runSearch() {
   const q = $("search-input").value.trim();
   const host = $("search-results");
@@ -352,44 +367,170 @@ async function runSearch() {
   host.innerHTML = '<div class="msg">搜索中…</div>';
   try {
     const t0 = performance.now();
-    const ms = await invoke("search_workspace", { query: q, caseSensitive });
-    renderSearch(q, ms, performance.now() - t0);
+    const out = await invoke("search_workspace", { query: q, caseSensitive });
+    searchOut = out; searchQuery = q;
+    renderSearch(performance.now() - t0);
   } catch (e) {
     host.innerHTML = '<div class="err">' + esc(e) + "</div>";
   }
 }
-function renderSearch(q, matches, ms) {
+
+function openPath(rel, line) {
+  const root = wsInfo ? wsInfo.path : "";
+  const sep_ = root && !root.endsWith("/") ? "/" : "";
+  invoke("open_viewer", { path: root + sep_ + rel, line: line || 0, mode: "text" });
+}
+
+function renderSearch(ms) {
   const host = $("search-results");
-  if (matches.length === 0) { host.innerHTML = '<div class="msg">无结果</div>'; return; }
+  host.innerHTML = "";
+  if (!searchOut) return;
+  const { matches, paths, truncated } = searchOut;
+  if (matches.length === 0 && paths.length === 0) {
+    host.innerHTML = '<div class="msg">无结果</div>';
+    return;
+  }
   const byFile = new Map();
   for (const m of matches) {
     if (!byFile.has(m.file)) byFile.set(m.file, []);
     byFile.get(m.file).push(m);
   }
+  const parts = [];
+  if (paths.length) parts.push(paths.length + " 个文件/目录");
+  if (matches.length) parts.push(byFile.size + " 个文件中 " + matches.length + " 处内容");
   const stats = document.createElement("div");
   stats.className = "msg";
-  stats.textContent = matches.length + " 个结果 · " + byFile.size + " 个文件 · " + (ms / 1000).toFixed(2) + "s";
-  host.innerHTML = "";
+  stats.textContent = parts.join(" · ") + " · " + (ms / 1000).toFixed(2) + "s" + (truncated ? " · 已截断" : "");
   host.appendChild(stats);
-  const root = wsInfo ? wsInfo.path : "";
-  const sep_ = root && !root.endsWith("/") ? "/" : "";
-  for (const [file, list] of byFile) {
-    const gh = document.createElement("div");
-    gh.className = "filegroup-head";
-    gh.innerHTML = '📄 ' + esc(file) + ' <span style="color:var(--dim)">(' + list.length + ")</span>";
-    host.appendChild(gh);
-    for (const m of list) {
+
+  // 路径命中组（文件名/目录名）
+  if (paths.length) {
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.textContent = "文件与目录名";
+    host.appendChild(head);
+    for (const ph of paths) {
       const row = document.createElement("div");
-      row.className = "row";
-      const hl = highlight(m.preview, q, caseSensitive);
-      row.innerHTML = '<span class="matchline"><span class="ln">' + m.line + '</span>' + hl + "</span>";
-      row.style.paddingLeft = "22px";
-      row.addEventListener("click", () =>
-        invoke("open_viewer", { path: root + sep_ + m.file, line: m.line, mode: "text" }));
+      row.className = "path-hit";
+      const icon = ph.kind === "dir" ? "📁" : "📄";
+      row.innerHTML = icon + ' <span>' + highlight(ph.path, searchQuery, caseSensitive) + '</span> <span class="pkind">' + (ph.kind === "dir" ? "目录" : "文件") + "</span>";
+      row.addEventListener("click", () => {
+        if (ph.kind === "file") openPath(ph.path, 0);
+        else {
+          // 目录：切到文件 tab 并展开该目录
+          switchTab("files");
+          expandTo(ph.path);
+        }
+      });
       host.appendChild(row);
     }
   }
+
+  // 内容命中组
+  if (matches.length) {
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.textContent = searchView === "tree" ? "内容（树视图）" : "内容";
+    host.appendChild(head);
+    if (searchView === "tree") renderMatchesTree(host, byFile);
+    else renderMatchesList(host, byFile);
+  }
 }
+
+function renderMatchesList(host, byFile) {
+  for (const [file, list] of byFile) {
+    const gh = document.createElement("div");
+    gh.className = "filegroup-head";
+    gh.innerHTML = '📄 ' + highlight(file, searchQuery, caseSensitive) + ' <span style="color:var(--dim)">(' + list.length + ")</span>";
+    host.appendChild(gh);
+    for (const m of list) appendMatchRow(host, file, m, 22);
+  }
+}
+
+function appendMatchRow(host, file, m, pad) {
+  const row = document.createElement("div");
+  row.className = "row";
+  row.innerHTML = '<span class="matchline"><span class="ln">' + m.line + '</span>' + highlight(m.preview, searchQuery, caseSensitive) + "</span>";
+  row.style.paddingLeft = pad + "px";
+  row.addEventListener("click", () => openPath(file, m.line));
+  host.appendChild(row);
+}
+
+// 树视图：matches 按目录层级嵌套；目录行可折叠，命中行点击打开查看器。
+function renderMatchesTree(host, byFile) {
+  // 构建 { dirs: Map(name->node), files: Map(name->{hits}) }
+  const root = { dirs: new Map(), files: new Map() };
+  for (const [file, list] of byFile) {
+    const segs = file.split("/");
+    let node = root;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const seg = segs[i];
+      if (!node.dirs.has(seg)) node.dirs.set(seg, { dirs: new Map(), files: new Map() });
+      node = node.dirs.get(seg);
+    }
+    node.files.set(segs[segs.length - 1], list);
+  }
+  // 记录每层文件的完整相对路径：渲染时传入前缀。
+  const renderWithPrefix = (node, prefix, depth, host) => {
+    for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const count = subtreeCount(child);
+      const line = document.createElement("div");
+      line.className = "tree-line";
+      line.style.paddingLeft = 10 + depth * 14 + "px";
+      line.innerHTML = '<span class="tw">▾</span>📁 <span>' + highlight(name, searchQuery, caseSensitive) + '</span><span class="cnt">(' + count + ")</span>";
+      const box = document.createElement("div");
+      line.addEventListener("click", () => {
+        const open = box.style.display !== "none";
+        box.style.display = open ? "none" : "";
+        line.querySelector(".tw").textContent = open ? "▸" : "▾";
+      });
+      host.appendChild(line);
+      host.appendChild(box);
+      renderWithPrefix(child, prefix + name + "/", depth + 1, box);
+    }
+    for (const [name, list] of [...node.files.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const rel = prefix + name;
+      const fl = document.createElement("div");
+      fl.className = "tree-line";
+      fl.style.paddingLeft = 10 + depth * 14 + "px";
+      fl.innerHTML = '📄 <span>' + highlight(name, searchQuery, caseSensitive) + '</span><span class="cnt">(' + list.length + ")</span>";
+      fl.addEventListener("click", () => openPath(rel, list[0].line));
+      host.appendChild(fl);
+      for (const m of list) {
+        const mr = document.createElement("div");
+        mr.className = "tree-match";
+        mr.innerHTML = '<span class="ln" style="color:#5a8bd8;margin-right:6px">' + m.line + '</span>' + highlight(m.preview, searchQuery, caseSensitive);
+        mr.addEventListener("click", (ev) => { ev.stopPropagation(); openPath(rel, m.line); });
+        host.appendChild(mr);
+      }
+    }
+  };
+  renderWithPrefix(root, "", 0, host);
+}
+
+function subtreeCount(node) {
+  let n = 0;
+  for (const [, list] of node.files) n += list.length;
+  for (const [, child] of node.dirs) n += subtreeCount(child);
+  return n;
+}
+
+// 展开文件树到指定相对路径（路径命中-目录点击时用）。
+async function expandTo(rel) {
+  const segs = rel.split("/").filter(Boolean);
+  treeState.clear();
+  treeState.set("", { open: true, loaded: false, children: null });
+  let acc = "";
+  for (const seg of segs) {
+    acc = acc ? acc + "/" + seg : seg;
+    treeState.set(acc, { open: true, loaded: false, children: null });
+  }
+  await renderTree();
+}
+
+// 视图切换按钮
+$("view-list-btn").onclick = () => { searchView = "list"; $("view-list-btn").classList.add("active"); $("view-tree-btn").classList.remove("active"); if (searchOut) renderSearch(0); };
+$("view-tree-btn").onclick = () => { searchView = "tree"; $("view-tree-btn").classList.add("active"); $("view-list-btn").classList.remove("active"); if (searchOut) renderSearch(0); };
 function highlight(text, q, cs) {
   const t = esc(text);
   const needle = esc(q);
