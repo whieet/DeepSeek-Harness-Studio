@@ -128,6 +128,13 @@
   .vsc-menu-sh { padding: 4px 12px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
   .vsc-menu-up { margin-left: auto; color: var(--dim); font-size: 11px; }
   .vsc-menu-item:hover .vsc-menu-up { color: #fff; }
+  .vsc-branch-item { flex-direction: column; align-items: stretch; gap: 1px; padding: 5px 12px; }
+  .vsc-branch-item .vsc-bi-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .vsc-branch-item .vsc-bi-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vsc-branch-item .vsc-bi-time { margin-left: auto; color: var(--dim); font-size: 11px; flex: none; }
+  .vsc-branch-item .vsc-bi-sub { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 21px; }
+  .vsc-branch-item:hover .vsc-bi-time, .vsc-branch-item:hover .vsc-bi-sub, .vsc-branch-item:hover .vsc-menu-up { color: #e8e8e8; }
+  .vsc-menu-rtag { float: right; font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--dim); }
   .vsc-checkout { padding: 6px 10px; border-bottom: 1px solid var(--line); }
   .vsc-checkout input { width: 100%; background: #141518; border: 1px solid var(--acc); color: var(--fg); border-radius: 4px; padding: 5px 8px; font: inherit; outline: none; box-sizing: border-box; }
   .vsc-checkout-hint { color: var(--dim); font-size: 10px; margin-top: 3px; }
@@ -773,6 +780,40 @@ async function renderGit() {
   buildGraph(host);
 }
 
+// VSCode 风格分支条目：两行（名称+相对时间 / 作者 · hash · 标题）。
+function branchMenuItem(b, close) {
+  const it = document.createElement("div");
+  it.className = "vsc-menu-item vsc-branch-item" + (b.current ? " current" : "");
+  const ico = b.current ? icon("CheckOutlined") : (b.kind === "remote" ? icon("CloudOutlined") : icon("BranchesOutlined"));
+  it.innerHTML =
+    '<div class="vsc-bi-main">' + ico + '<span class="vsc-bi-name">' + esc(b.name) + '</span>'
+    + (b.upstream && b.kind === "local" ? '<span class="vsc-menu-up">' + esc(b.upstream) + '</span>' : "")
+    + '<span class="vsc-bi-time">' + relTime(b.time) + '</span></div>'
+    + '<div class="vsc-bi-sub">' + esc(b.author || "") + (b.short ? " · " + esc(b.short) : "") + (b.subject ? " · " + esc(b.subject) : "") + '</div>';
+  if (!b.current) it.onclick = async () => {
+    close();
+    try {
+      await invoke("git_checkout", { branch: b.name, newBranch: false });
+      const target = b.kind === "remote" && b.name.startsWith("origin/") ? b.name.slice(7) : b.name;
+      toast(b.kind === "remote" ? "已切换到 " + target + "（跟踪 " + b.name + "）" : "已切换到 " + target, "ok");
+      await refreshAll();
+    } catch (e) { toast(String(e), "err"); }
+  };
+  return it;
+}
+
+// 相对时间（中文）。
+function relTime(unix) {
+  if (!unix) return "";
+  const diff = Math.floor(Date.now() / 1000) - unix;
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
+  if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
+  if (diff < 86400 * 30) return Math.floor(diff / 86400) + " 天前";
+  if (diff < 86400 * 365) return Math.floor(diff / 86400 / 30) + " 个月前";
+  return Math.floor(diff / 86400 / 365) + " 年前";
+}
+
 // 分支菜单：切换分支 / 新建分支（VSCode quick-pick 简化）。
 async function toggleBranchMenu(current) {
   const menu = $("vsc-branch-menu");
@@ -787,21 +828,16 @@ async function toggleBranchMenu(current) {
     sh.textContent = "本地分支";
     menu.appendChild(sh);
   }
-  for (const b of locals) {
-    const it = document.createElement("div");
-    it.className = "vsc-menu-item" + (b.current ? " current" : "");
-    it.innerHTML = icon(b.current ? "CheckOutlined" : "BranchesOutlined") + ' ' + esc(b.name) + (b.upstream ? '<span class="vsc-menu-up">' + esc(b.upstream) + '</span>' : "");
-    if (!b.current) it.onclick = async () => {
-      menu.classList.add("hidden");
-      try {
-        await invoke("git_checkout", { branch: b.name, newBranch: false });
-        const target = b.kind === "remote" && b.name.startsWith("origin/") ? b.name.slice(7) : b.name;
-        toast(b.kind === "remote" ? "已切换到 " + target + "（跟踪 " + b.name + "）" : "已切换到 " + target, "ok");
-        await refreshAll();
-      } catch (e) { toast(String(e), "err"); }
-    };
-    menu.appendChild(it);
+  for (const b of locals) menu.appendChild(branchMenuItem(b, () => menu.classList.add("hidden")));
+
+  const remotes = branches.filter((b) => b.kind === "remote");
+  if (remotes.length) {
+    const sh = document.createElement("div");
+    sh.className = "vsc-menu-sh";
+    sh.innerHTML = '远程分支 <span class="vsc-menu-rtag">remote branches</span>';
+    menu.appendChild(sh);
   }
+  for (const b of remotes) menu.appendChild(branchMenuItem(b, () => menu.classList.add("hidden")));
   menu.classList.remove("hidden");
   const close = (ev) => { if (!menu.contains(ev.target) && !ev.target.closest("#vsc-branch")) { menu.classList.add("hidden"); document.removeEventListener('click', close); } };
   setTimeout(() => document.addEventListener("click", close), 0);

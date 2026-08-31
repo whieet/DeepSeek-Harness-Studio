@@ -470,6 +470,10 @@ pub struct GitBranch {
     pub kind: String,
     pub current: bool,
     pub upstream: String,
+    pub time: i64,
+    pub author: String,
+    pub short: String,
+    pub subject: String,
 }
 
 /// 提交信息。
@@ -1031,16 +1035,20 @@ fn git_branches_in(root: &Path) -> Result<Vec<GitBranch>, String> {
     if !root.join(".git").exists() {
         return Err(String::from("当前目录不是 git 仓库"));
     }
-    let raw = git(root, &["branch", "-a", "--format=%(HEAD)%00%(refname)%00%(upstream:short)"])?;
+    let fmt = "%(refname)%00%(HEAD)%00%(upstream:short)%00%(committerdate:unix)%00%(authorname)%00%(objectname:short)%00%(contents:subject)";
+    let raw = git(root, &["for-each-ref", &format!("--format={}", fmt), "refs/heads", "refs/remotes"])?;
     let mut out = Vec::new();
     for line in raw.lines() {
-        let line = line.trim();
+        let line = line.trim_end_matches(' ');
         if line.is_empty() { continue; }
         let mut parts = line.split(' ');
-        let head = parts.next().unwrap_or(" ").trim() == "*";
         let refname = parts.next().unwrap_or("").trim().to_string();
-        if refname.is_empty() { continue; }
+        let head = parts.next().unwrap_or("").trim() == "*";
         let upstream = parts.next().unwrap_or("").trim().to_string();
+        let time = parts.next().unwrap_or("0").trim().parse::<i64>().unwrap_or(0);
+        let author = parts.next().unwrap_or("").trim().to_string();
+        let short = parts.next().unwrap_or("").trim().to_string();
+        let subject = parts.next().unwrap_or("").trim().to_string();
         let (kind, display) = if let Some(n) = refname.strip_prefix("refs/heads/") {
             ("local", n.to_string())
         } else if let Some(n) = refname.strip_prefix("refs/remotes/") {
@@ -1048,10 +1056,15 @@ fn git_branches_in(root: &Path) -> Result<Vec<GitBranch>, String> {
         } else {
             continue;
         };
-        if display == "origin/HEAD" || display.ends_with("/HEAD") { continue; }
-        out.push(GitBranch { name: display, kind: kind.to_string(), current: head, upstream });
+        if display.ends_with("/HEAD") { continue; }
+        out.push(GitBranch { name: display, kind: kind.to_string(), current: head, upstream, time, author, short, subject });
     }
-    out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
+    // 当前分支置首，其余按最后提交时间倒序（VSCode 同款：最近活动的在前）
+    out.sort_by(|a, b| {
+        b.current
+            .cmp(&a.current)
+            .then(b.time.cmp(&a.time))
+    });
     Ok(out)
 }
 
