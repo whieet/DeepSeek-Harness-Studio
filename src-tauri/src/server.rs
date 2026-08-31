@@ -5,7 +5,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -465,23 +464,47 @@ pub fn http_is_ok(port: u16) -> bool {
 /// 右侧工作区侧边栏：竖向图标条宽度（固定）。
 pub const SIDEBAR_BAR_W: f64 = 44.0;
 
-static KERNEL_URL: OnceLock<String> = OnceLock::new();
-
-/// 读取内核页 URL（sidebar iframe 用）。
-pub fn kernel_url() -> Option<String> {
-    KERNEL_URL.get().cloned()
-}
-
 /// 重新布局主窗口内的两个 webview：kernel 占左侧，sidebar 贴右缘。
+pub fn layout_main_window(window: &tauri::Window) {
+    let Ok(scale) = window.scale_factor() else { return };
+    let Ok(size) = window.inner_size() else { return };
+    let hidden = crate::sidebar::sidebar_hidden();
+    let bar_w = (SIDEBAR_BAR_W * scale).round() as i32;
+    let panel_w = if hidden { 0 } else { (crate::sidebar::sidebar_panel_w() * scale).round() as i32 };
+    let total = size.width as i32;
+    let height = size.height as i32;
+    let kernel_w = (total - bar_w - panel_w).max(1);
+    // 折叠/展开时 sidebar webview 宽度不变（恒 panel_w+bar_w），仅整体平移：
+    // WKWebView 平移不触发内容重排，消除面板内容挤压重排的残影。
+    // 顺序按"谁先动露出区域就被谁覆盖"原则：
+    //   收起：sidebar 先滑出屏（上层先动），kernel 后扩大——右缘过渡全程被 sidebar 覆盖；
+    //   展开：kernel 先收缩（露出的是窗口深色底、非白色），sidebar 后滑回覆盖——
+    //        若 sidebar 先滑回，其屏幕外裁剪区域恢复需要一帧渲染，会先闪白。
+    let full_w = (bar_w + panel_w) as f64 / scale;
+    let sidebar_x = if hidden { (total - bar_w) as f64 / scale } else { (kernel_w as f64) / scale };
+    if hidden {
+        if let Some(wv) = window.get_webview("sidebar") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(sidebar_x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(full_w, height as f64 / scale)) });
+        }
+        if let Some(wv) = window.get_webview("kernel") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+        }
+    } else {
+        if let Some(wv) = window.get_webview("kernel") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+        }
+        if let Some(wv) = window.get_webview("sidebar") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(sidebar_x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(full_w, height as f64 / scale)) });
+        }
+    }
+}
 
 pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
-    let _ = KERNEL_URL.set(url.to_string());
+    let port = parsed.port().ok_or_else(|| String::from("内核 URL 缺少端口"))?;
     if let Some(existing) = app.get_window("main") {
-        // iframe 架构：通知前端更新内核地址即可
-        let js = format!("window.__setKernelUrl && window.__setKernelUrl({:?});", url);
-        if let Some(wv) = existing.get_webview("sidebar") {
-            let _ = wv.eval(&js);
+        if let Some(wv) = existing.get_webview("kernel") {
+            wv.navigate(parsed).map_err(|e| e.to_string())?;
         }
         let _ = existing.show();
         let _ = existing.set_focus();
@@ -490,6 +513,7 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         }
         return Ok(());
     }
+    let opener_app = app.clone();
     let window = tauri::Window::builder(app, "main")
         .title("DeepSeek Harness")
         .inner_size(1280.0, 800.0)
@@ -499,18 +523,41 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    // 单 webview 架构：sidebar.html 为唯一页面，内核页以 iframe 内嵌（纯 DOM 布局，折叠/拖宽零闪烁）
+    // 左：内核 Web UI（外部页面，零 IPC；外链经系统浏览器打开）
+    let kernel = tauri::webview::WebviewBuilder::new("kernel", tauri::WebviewUrl::External(parsed))
+        .background_color(tauri::window::Color(30, 30, 30, 255))
+        .on_navigation(move |nav| {
+            let allowed =
+                nav.scheme() == "http" && nav.host_str() == Some("127.0.0.1") && nav.port() == Some(port);
+            if !allowed {
+                let _ = opener_app.opener().open_url(nav.as_str(), None::<&str>);
+            }
+            allowed
+        });
     let size = window.inner_size().unwrap_or_else(|_| tauri::PhysicalSize::new(1280, 800));
     let scale = window.scale_factor().unwrap_or(1.0);
-    let webview = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()));
+    let panel_w = (crate::sidebar::sidebar_panel_w() * scale).round() as i32;
+    let bar_w = (SIDEBAR_BAR_W * scale).round() as i32;
+    let kernel_w = (size.width as i32 - panel_w - bar_w).max(1) as f64 / scale;
+    window
+        .add_child(kernel, tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(kernel_w, size.height as f64 / scale))
+        .map_err(|e| e.to_string())?;
+
+    // 右：工作区侧边栏（本地页面，含竖向图标条）
+    // 侧栏 webview 透明：折叠动画期间面板滑走后，其空出的区域露出下层 kernel，
+    // 避免"深色遮罩滞后消失"的宽度延迟感（实体内容 panel/bar/dragbar 各自有不透明背景）。
+    let sidebar = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()))
+        .transparent(true);
     window
         .add_child(
-            webview,
-            tauri::LogicalPosition::new(0.0, 0.0),
-            tauri::LogicalSize::new(size.width as f64 / scale, size.height as f64 / scale),
+            sidebar,
+            tauri::LogicalPosition::new(kernel_w, 0.0),
+            tauri::LogicalSize::new((panel_w + bar_w) as f64 / scale, size.height as f64 / scale),
         )
         .map_err(|e| e.to_string())?;
 
+    // 主窗口就绪后关闭启动页：避免留下一个 480x320 的小窗显示同样的内核界面
+    // （用户会误以为是"最小化后变小的窗口"），且它 resizable(false) 不可拖拽调整。
     if let Some(splash) = app.get_webview_window("splash") {
         let _ = splash.destroy();
     }
