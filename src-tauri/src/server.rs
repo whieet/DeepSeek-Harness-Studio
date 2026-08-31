@@ -473,7 +473,6 @@ pub fn layout_main_window(window: &tauri::Window) {
     let panel_w = if hidden { 0 } else { (crate::sidebar::sidebar_panel_w() * scale).round() as i32 };
     let total = size.width as i32;
     let height = size.height as i32;
-    let kernel_w = (total - bar_w - panel_w).max(1);
     // 折叠时 sidebar webview 宽度不变（恒 panel_w+bar_w），仅整体右移出屏、只留图标条：
     // WKWebView 平移不触发内容重排，从根上消除折叠/展开时面板内容被挤压重排的残影闪烁。
     // 先动上层 sidebar，再动 kernel，边界过渡全程被覆盖、无缝隙。
