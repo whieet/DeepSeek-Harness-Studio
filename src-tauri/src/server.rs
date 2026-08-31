@@ -544,10 +544,8 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     // 右：工作区侧边栏（本地页面，含竖向图标条）
-    // 侧栏 webview 透明：折叠动画期间面板滑走后，其空出的区域露出下层 kernel，
-    // 避免"深色遮罩滞后消失"的宽度延迟感（实体内容 panel/bar/dragbar 各自有不透明背景）。
     let sidebar = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()))
-        .transparent(true);
+        .background_color(tauri::window::Color(30, 31, 34, 255));
     window
         .add_child(
             sidebar,
