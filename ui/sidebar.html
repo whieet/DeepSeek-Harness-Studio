@@ -1055,8 +1055,7 @@ async function onTabClick(name) {
     return;
   }
   if (activeTab === name) {
-    // 已激活：收起（保留激活态高亮）；先隐藏内容再平移，避免残影
-    $("panel").style.visibility = "hidden";
+    // 已激活：收起（保留激活态高亮）
     try { applyCollapse(await invoke("toggle_sidebar")); } catch (e) { alert(String(e)); }
     return;
   }
@@ -1071,12 +1070,10 @@ $("head-refresh").onclick = async () => {
   else if (activeTab === "search") await runSearch();
 };
 async function doCollapse() {
-  // 折叠：先本地隐藏面板内容（同步、零延迟），再触发 Rust 平移 webview——残影不可能出现在隐藏之后
-  if (!panelCollapsed) $("panel").style.visibility = "hidden";
   try {
     const hidden = await invoke("toggle_sidebar");
     applyCollapse(hidden);
-  } catch (e) { applyCollapse(true); alert(String(e)); }
+  } catch (e) { alert(String(e)); }
 }
 function applyCollapse(hidden) {
   panelCollapsed = hidden;
