@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "sidebar",
+  "description": "工作区侧边栏 webview：文件树/搜索/Git 与工作区事件",
+  "webviews": [
+    "sidebar"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

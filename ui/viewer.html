@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>查看文件</title>
+<style>
+  :root { color-scheme: dark; --bg:#1e1f22; --fg:#d4d4d4; --dim:#8b8f98; --line:#333438; --acc:#2e7cf6; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 12px/1.55 -apple-system, "PingFang SC", sans-serif; display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 8px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  header .path { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  header .mode { font-weight: 600; }
+  #content { flex: 1; overflow: auto; }
+  pre#code { font: 11.5px/1.6 ui-monospace, Menlo, monospace; padding: 10px 0; user-select: text; -webkit-user-select: text; }
+  .ln-row { display: flex; }
+  .ln-no { flex: 0 0 52px; text-align: right; padding-right: 12px; color: #5c6066; }
+  .ln-txt { flex: 1; white-space: pre-wrap; word-break: break-all; padding-right: 14px; }
+  .ln-row.hl { background: #2e7cf626; }
+  .diff-add { background: #12341f; }
+  .diff-add .ln-txt { color: #9fe0b0; }
+  .diff-del { background: #3a1a1a; }
+  .diff-del .ln-txt { color: #f0a9a9; }
+  .diff-hunk { color: #7fb3f5; background: #ffffff08; padding: 0 10px; }
+  img.preview { max-width: 96%; max-height: 78vh; margin: 18px auto; display: block; border: 1px solid var(--line); background: #fff; }
+  .msg { padding: 20px; color: var(--dim); }
+  .err { color: #e07a7a; padding: 14px; word-break: break-all; user-select: text; }
+</style>
+</head>
+<body>
+  <header><span class="mode" id="mode-chip">查看</span><span class="path" id="file-path"></span></header>
+  <div id="content"><div class="msg">加载中…</div></div>
+<script>
+const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const MODE_LABEL = { text: "查看", diff: "更改（未暂存）", "diff-staged": "更改（已暂存）" };
+
+function esc(s) {
+  return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+async function load() {
+  const mode = params.get("mode") || "text";
+  const path = params.get("path") || "";
+  const line = parseInt(params.get("line") || "0", 10);
+  $("mode-chip").textContent = MODE_LABEL[mode] || "查看";
+  $("file-path").textContent = path;
+  document.title = (path.split("/").pop() || "查看") + " — DeepSeek Harness";
+  const host = $("content");
+  try {
+    if (mode === "diff" || mode === "diff-staged") {
+      const diff = await invoke("git_diff_file", { path, staged: mode === "diff-staged" });
+      renderDiff(diff, host);
+      return;
+    }
+    const res = await invoke("fs_read", { path });
+    if (res.kind === "text") renderText(res.content, line, host);
+    else if (res.kind === "image") {
+      host.innerHTML = '<img class="preview" src="data:' + res.mime + ";base64," + res.data + '">';
+    } else if (res.kind === "binary") {
+      host.innerHTML = '<div class="msg">二进制文件（' + fmtSize(res.size) + "），不支持预览。<br>可在侧边栏右键选择“在访达中显示”。</div>";
+    } else if (res.kind === "tooLarge") {
+      host.innerHTML = '<div class="msg">文件过大（' + fmtSize(res.size) + "），不支持预览。</div>";
+    } else {
+      host.innerHTML = '<div class="msg">未知内容类型</div>';
+    }
+  } catch (e) {
+    host.innerHTML = '<div class="err">加载失败：' + esc(e) + "</div>";
+  }
+}
+
+function fmtSize(n) {
+  if (n > 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n > 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+
+function renderText(content, line, host) {
+  const lines = content.split("\n");
+  const pre = document.createElement("pre");
+  pre.id = "code";
+  let hl = null;
+  lines.forEach((text, i) => {
+    const row = document.createElement("div");
+    row.className = "ln-row";
+    if (line && i + 1 === line) { row.classList.add("hl"); hl = row; }
+    row.innerHTML = '<span class="ln-no">' + (i + 1) + '</span><span class="ln-txt">' + (esc(text) || " ") + "</span>";
+    pre.appendChild(row);
+  });
+  host.innerHTML = "";
+  host.appendChild(pre);
+  if (hl) hl.scrollIntoView({ block: "center" });
+}
+
+function renderDiff(diff, host) {
+  if (!diff.trim()) { host.innerHTML = '<div class="msg">没有差异内容。</div>'; return; }
+  const pre = document.createElement("pre");
+  pre.id = "code";
+  for (const l of diff.split("\n")) {
+    const row = document.createElement("div");
+    row.className = "ln-row";
+    const txt = l || " ";
+    if (l.startsWith("@@")) row.classList.add("diff-hunk");
+    else if (l.startsWith("+")) row.classList.add("diff-add");
+    else if (l.startsWith("-")) row.classList.add("diff-del");
+    row.innerHTML = '<span class="ln-no"></span><span class="ln-txt">' + esc(txt) + "</span>";
+    pre.appendChild(row);
+  }
+  host.innerHTML = "";
+  host.appendChild(pre);
+}
+
+window.addEventListener("DOMContentLoaded", load);
+</script>
+</body>
+</html>

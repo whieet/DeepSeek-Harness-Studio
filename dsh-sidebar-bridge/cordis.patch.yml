@@ -1,0 +1,6 @@
+# dsh-desktop 侧边栏桥：注册只读 HTTP 路由 /dsh-sidebar/state
+- insert:
+    - id: dsh-sidebar-bridge
+      name: dsh-sidebar-bridge
+      config:
+        enabled: true

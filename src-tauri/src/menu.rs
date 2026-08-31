@@ -1,7 +1,7 @@
 // 应用菜单：应用（更新 / 窗口 / 退出）/ 内核 / 帮助 三个下拉子菜单；
 // 加速键按操作系统映射：CmdOrCtrl 在 macOS 为 ⌘、Windows/Linux 为 Ctrl。
 use tauri::menu::{IsMenuItem, Menu, MenuBuilder, MenuItemBuilder, MenuEvent, SubmenuBuilder};
-use tauri::{AppHandle, Manager, WebviewWindow, Wry};
+use tauri::{AppHandle, Manager, Window, Wry};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -33,6 +33,9 @@ pub fn build_menu(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
     let fullscreen = MenuItemBuilder::with_id("toggle-fullscreen", "切换全屏")
         .accelerator(fullscreen_accel())
         .build(app)?;
+    let toggle_sidebar = MenuItemBuilder::with_id("toggle-sidebar", "切换侧边栏")
+        .accelerator("CmdOrCtrl+B")
+        .build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出 DeepSeek Harness")
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
@@ -42,6 +45,7 @@ pub fn build_menu(app: &AppHandle<Wry>) -> tauri::Result<Menu<Wry>> {
         .separator()
         .item(&minimize)
         .item(&fullscreen)
+        .item(&toggle_sidebar)
         .separator()
         .item(&quit)
         .build()?;
@@ -82,6 +86,7 @@ pub fn handle_menu_event(app: &AppHandle<Wry>, event: MenuEvent) {
         "restore-bundled-kernel" => restore_bundled_kernel(app),
         "minimize-window" => minimize_window(app),
         "toggle-fullscreen" => toggle_fullscreen(app),
+        "toggle-sidebar" => toggle_sidebar(app),
         "copy-diagnostics" => copy_diagnostics(app),
         "open-logs" => open_logs(app),
         "quit" => send_command(app, SuperCommand::Shutdown),
@@ -95,8 +100,9 @@ fn send_command(app: &AppHandle<Wry>, command: SuperCommand) {
 }
 
 /// 主窗口（内核就绪后创建）；仅 splash 阶段为 None。
-fn main_window(app: &AppHandle<Wry>) -> Option<WebviewWindow<Wry>> {
-    app.get_webview_window("main")
+/// 多 webview 重构后 "main" 是窗口 label（内含 kernel/sidebar 两个 webview）。
+fn main_window(app: &AppHandle<Wry>) -> Option<Window<Wry>> {
+    app.get_window("main")
 }
 
 fn minimize_window(app: &AppHandle<Wry>) {
@@ -110,6 +116,10 @@ fn toggle_fullscreen(app: &AppHandle<Wry>) {
         let fullscreen = window.is_fullscreen().unwrap_or(false);
         let _ = window.set_fullscreen(!fullscreen);
     }
+}
+
+fn toggle_sidebar(app: &AppHandle<Wry>) {
+    let _ = crate::sidebar::toggle_sidebar(app.clone());
 }
 
 fn change_workspace(app: &AppHandle<Wry>) {

@@ -6,6 +6,7 @@
 mod config;
 mod menu;
 mod server;
+mod sidebar;
 mod state;
 mod update;
 
@@ -29,7 +30,8 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = app.get_window("main") {
+                let _ = window.show();
                 let _ = window.set_focus();
             }
         }))
@@ -44,7 +46,28 @@ fn main() {
             update::update_skip,
             update::update_dismiss,
             update::update_restart_kernel,
-            update::update_check_now
+            update::update_check_now,
+            sidebar::workspace_info,
+            sidebar::fs_list,
+            sidebar::fs_read,
+            sidebar::fs_new_file,
+            sidebar::fs_mkdir,
+            sidebar::fs_rename,
+            sidebar::fs_delete,
+            sidebar::fs_copy_path,
+            sidebar::fs_reveal,
+            sidebar::search_workspace,
+            sidebar::git_status,
+            sidebar::git_add,
+            sidebar::git_unstage,
+            sidebar::git_discard,
+            sidebar::git_commit,
+            sidebar::git_push,
+            sidebar::git_pull,
+            sidebar::git_diff_file,
+            sidebar::set_sidebar_width,
+            sidebar::toggle_sidebar,
+            sidebar::open_viewer
         ])
         .on_menu_event(menu::handle_menu_event)
         .on_window_event(|window, event| {
@@ -57,9 +80,17 @@ fn main() {
                     let _ = state.tx.send(SuperCommand::Shutdown);
                 }
             }
+            if let WindowEvent::Resized { .. } = event {
+                if window.label() == "main" {
+                    server::layout_main_window(window);
+                }
+            }
         })
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // 桥插件随包分发：装进 web profile（幂等），内核启动即带侧边栏数据源。
+            sidebar::ensure_bridge_installed(&handle);
 
             // 内核运行时定位（开发覆盖 / 随包资源 / 更新覆盖层），并启动监督线程。
             let runtime = server::resolve_runtime(&handle)?;
@@ -125,6 +156,9 @@ fn main() {
 
             // 启动自动检查更新（内核就绪后触发；autoCheck 关闭则跳过）。
             update::start_auto_check(&handle);
+
+            // 轮询内核会话工作区（桥插件），变化即刷新侧边栏。
+            sidebar::start_bridge_poll(handle.clone());
 
             log::info!("dsh-desktop 启动完成");
             Ok(())

@@ -461,11 +461,35 @@ pub fn http_is_ok(port: u16) -> bool {
 
 // ── 主窗口编排（监督线程通过 run_on_main_thread 调用） ────────────────────────
 
+/// 右侧工作区侧边栏：竖向图标条宽度（固定）。
+pub const SIDEBAR_BAR_W: f64 = 44.0;
+
+/// 重新布局主窗口内的两个 webview：kernel 占左侧，sidebar 贴右缘。
+pub fn layout_main_window(window: &tauri::Window) {
+    let Ok(scale) = window.scale_factor() else { return };
+    let Ok(size) = window.inner_size() else { return };
+    let hidden = crate::sidebar::sidebar_hidden();
+    let bar_w = (SIDEBAR_BAR_W * scale).round() as i32;
+    let panel_w = if hidden { 0 } else { (crate::sidebar::sidebar_panel_w() * scale).round() as i32 };
+    let total = size.width as i32;
+    let height = size.height as i32;
+    let kernel_w = (total - bar_w - panel_w).max(1);
+    if let Some(wv) = window.get_webview("kernel") {
+        let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+    }
+    if let Some(wv) = window.get_webview("sidebar") {
+        let x = (kernel_w as f64) / scale;
+        let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new((bar_w + panel_w) as f64 / scale, height as f64 / scale)) });
+    }
+}
+
 pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
     let port = parsed.port().ok_or_else(|| String::from("内核 URL 缺少端口"))?;
-    if let Some(existing) = app.get_webview_window("main") {
-        existing.navigate(parsed).map_err(|e| e.to_string())?;
+    if let Some(existing) = app.get_window("main") {
+        if let Some(wv) = existing.get_webview("kernel") {
+            wv.navigate(parsed).map_err(|e| e.to_string())?;
+        }
         let _ = existing.show();
         let _ = existing.set_focus();
         if let Some(splash) = app.get_webview_window("splash") {
@@ -474,12 +498,17 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         return Ok(());
     }
     let opener_app = app.clone();
-    tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(parsed))
+    let window = tauri::Window::builder(app, "main")
         .title("DeepSeek Harness")
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 600.0)
         .resizable(true)
         .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 左：内核 Web UI（外部页面，零 IPC；外链经系统浏览器打开）
+    let kernel = tauri::webview::WebviewBuilder::new("kernel", tauri::WebviewUrl::External(parsed))
         .on_navigation(move |nav| {
             let allowed =
                 nav.scheme() == "http" && nav.host_str() == Some("127.0.0.1") && nav.port() == Some(port);
@@ -487,9 +516,26 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
                 let _ = opener_app.opener().open_url(nav.as_str(), None::<&str>);
             }
             allowed
-        })
-        .build()
+        });
+    let size = window.inner_size().unwrap_or_else(|_| tauri::PhysicalSize::new(1280, 800));
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let panel_w = (crate::sidebar::sidebar_panel_w() * scale).round() as i32;
+    let bar_w = (SIDEBAR_BAR_W * scale).round() as i32;
+    let kernel_w = (size.width as i32 - panel_w - bar_w).max(1) as f64 / scale;
+    window
+        .add_child(kernel, tauri::LogicalPosition::new(0.0, 0.0), tauri::LogicalSize::new(kernel_w, size.height as f64 / scale))
         .map_err(|e| e.to_string())?;
+
+    // 右：工作区侧边栏（本地页面，含竖向图标条）
+    let sidebar = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()));
+    window
+        .add_child(
+            sidebar,
+            tauri::LogicalPosition::new(kernel_w, 0.0),
+            tauri::LogicalSize::new((panel_w + bar_w) as f64 / scale, size.height as f64 / scale),
+        )
+        .map_err(|e| e.to_string())?;
+
     // 主窗口就绪后关闭启动页：避免留下一个 480x320 的小窗显示同样的内核界面
     // （用户会误以为是"最小化后变小的窗口"），且它 resizable(false) 不可拖拽调整。
     if let Some(splash) = app.get_webview_window("splash") {
@@ -569,7 +615,8 @@ fn run_supervisor(
                 continue;
             }
             Some(SuperCommand::SetWorkspace(dir)) => {
-                *shared.workspace.lock().unwrap() = dir;
+                *shared.workspace.lock().unwrap() = dir.clone();
+                crate::sidebar::emit_workspace_changed(&app, &dir);
                 auto_attempts = 0;
                 stop_kernel(&mut kernel);
                 saw_url = false;

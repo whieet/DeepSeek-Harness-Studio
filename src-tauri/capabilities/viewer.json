@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "viewer",
+  "description": "文件查看窗口：读取文件内容与 diff",
+  "windows": [
+    "viewer"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

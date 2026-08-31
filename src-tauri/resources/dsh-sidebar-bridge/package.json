@@ -1,0 +1,17 @@
+{
+  "name": "dsh-sidebar-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "description": "DeepSeek Harness 桌面版侧边栏桥：暴露会话/工作区只读 HTTP 端点",
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

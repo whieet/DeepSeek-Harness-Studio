@@ -1,0 +1,804 @@
+// 右侧工作区侧边栏：文件树 / 全目录搜索 / Git 面板的命令层。
+// 安全面：所有文件路径 canonicalize 后必须位于当前工作区内，拒绝逃逸。
+// Git 通过系统 git CLI（cwd = 工作区），未安装 git 时返回友好错误。
+
+use serde::Serialize;
+use std::io::Read;
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::server;
+use crate::state::AppState;
+
+/// 侧栏面板是否收起（竖向图标条常驻）。
+static SIDEBAR_HIDDEN: AtomicBool = AtomicBool::new(false);
+/// 侧栏面板宽度（f64 以 bits 存 AtomicU64），初始 340.0。
+static SIDEBAR_PANEL_W: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(340.0_f64.to_bits());
+
+/// 内核会话工作区（dsh-sidebar-bridge 插件上报的最新会话 cwd）。
+static BRIDGE_CWD: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+pub fn sidebar_hidden() -> bool {
+    SIDEBAR_HIDDEN.load(Ordering::SeqCst)
+}
+
+pub fn sidebar_panel_w() -> f64 {
+    f64::from_bits(SIDEBAR_PANEL_W.load(Ordering::SeqCst))
+}
+
+fn workspace_root(app: &AppHandle) -> Result<PathBuf, String> {
+    // 优先跟随内核会话工作区（插件桥上报）；不可用时回退到应用工作区。
+    if let Ok(guard) = BRIDGE_CWD.lock() {
+        if let Some(p) = guard.as_ref() {
+            if p.is_dir() {
+                return Ok(p.clone());
+            }
+        }
+    }
+    let state = app.state::<AppState>();
+    let root = state.shared.workspace.lock().unwrap().clone();
+    if !root.is_dir() {
+        return Err(format!("工作区目录不存在：{}", root.display()));
+    }
+    Ok(root)
+}
+
+// ── 内核会话工作区桥（dsh-sidebar-bridge 插件）───────────────────────────────
+
+/// 读取插件写下的桥端口（~/.dsh/sidebar-bridge.port）。
+fn bridge_port() -> Option<u16> {
+    let home = std::env::var("HOME").ok()?;
+    let path = PathBuf::from(home).join(".dsh").join("sidebar-bridge.port");
+    let meta = std::fs::metadata(&path).ok()?;
+    // 过期防护：端口文件超过 10 分钟未刷新视为失效。
+    if let Ok(age) = meta.modified().map(|m| m.elapsed().map(|e| e.as_secs()).unwrap_or(0)) {
+        if age > 600 {
+            return None;
+        }
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    text.trim().parse::<u16>().ok()
+}
+
+/// 桥 /state 响应（只取需要的字段）。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeState {
+    #[serde(default)]
+    current_cwd: Option<String>,
+}
+
+fn bridge_fetch(port: u16) -> Option<BridgeState> {
+    let mut stream = TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        Duration::from_millis(800),
+    )
+    .ok()?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .ok()?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(800)))
+        .ok()?;
+    use std::io::Write;
+    let _ = write!(
+        stream,
+        "GET /state HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    let mut raw = String::new();
+    let _ = std::io::Read::by_ref(&mut stream).take(4 * 1024 * 1024).read_to_string(&mut raw);
+    let sep = raw.find("\r\n\r\n")?;
+    let head = &raw[..sep];
+    // 状态行必须 200。
+    let status_ok = head.split_whitespace().nth(1).is_some_and(|c| c == "200");
+    if !status_ok {
+        return None;
+    }
+    let body = &raw[sep + 4..];
+    let state: BridgeState = serde_json::from_str(body.trim()).ok()?;
+    Some(state)
+}
+
+/// 启动轮询线程：每 2 秒读取桥状态；会话工作区变化时通知侧栏刷新。
+pub fn start_bridge_poll(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut last: Option<PathBuf> = None;
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let cwd = bridge_port()
+                .and_then(bridge_fetch)
+                .and_then(|s| s.current_cwd)
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir());
+            let Some(cwd) = cwd else { continue };
+            let changed = last.as_ref().map(|p| p != &cwd).unwrap_or(true);
+            if changed {
+                if let Ok(mut guard) = BRIDGE_CWD.lock() {
+                    *guard = Some(cwd.clone());
+                }
+                let _ = app.emit("dsh-sidebar-workspace", cwd.display().to_string());
+                last = Some(cwd);
+            }
+        }
+    });
+}
+
+/// 启动前确保桥插件已安装进 web profile（拷贝插件 + 登记 patch 层，均幂等）。
+pub fn ensure_bridge_installed(app: &AppHandle) {
+    let Some(resource) = app.path().resource_dir().ok().map(|d| d.join("dsh-sidebar-bridge")) else {
+        return;
+    };
+    if !resource.join("index.js").exists() {
+        return;
+    }
+    let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) else {
+        return;
+    };
+    let dst = home
+        .join(".dsh")
+        .join("profiles")
+        .join("web")
+        .join("node_modules")
+        .join("dsh-sidebar-bridge");
+    let same = std::fs::read_to_string(dst.join("index.js"))
+        .map(|old| old == std::fs::read_to_string(resource.join("index.js")).unwrap_or_default())
+        .unwrap_or(false);
+    if !same {
+        let _ = std::fs::remove_dir_all(&dst);
+        let _ = std::fs::create_dir_all(&dst);
+        for name in ["index.js", "package.json"] {
+            let _ = std::fs::copy(resource.join(name), dst.join(name));
+        }
+    }
+    let patch_path = home.join(".dsh").join("profiles").join("web").join("cordis.patch.yml");
+    let patch = std::fs::read_to_string(&patch_path).unwrap_or_default();
+    if !patch.contains("dsh-sidebar-bridge") {
+        let entry = "\n# dsh-desktop 侧边栏数据桥（桌面壳轮询会话/工作区；升级 dsh 不受影响）\n\
+- insert:\n    - id: dsh-sidebar-bridge\n      name: dsh-sidebar-bridge\n";
+        let _ = std::fs::write(&patch_path, patch.trim_end().to_string() + entry);
+    }
+}
+
+/// 校验 path 位于 root 内（防符号链接/相对路径逃逸），返回 canonical 路径。
+fn ensure_inside(root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let root_canon = root.canonicalize().map_err(|e| e.to_string())?;
+    let path_canon = path
+        .canonicalize()
+        .map_err(|e| format!("路径无效（{}）：{}", path.display(), e))?;
+    if path_canon.starts_with(&root_canon) {
+        Ok(path_canon)
+    } else {
+        Err(format!("路径超出工作区范围：{}", path.display()))
+    }
+}
+
+/// rename/mkdir 等操作的目标可能尚不存在：校验其父目录在工作区内。
+fn ensure_parent_inside(root: &Path, path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| String::from("路径缺少父目录"))?;
+    ensure_inside(root, parent).map(|_| ())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInfo {
+    pub path: String,
+    pub name: String,
+    pub is_git_repo: bool,
+    pub git_missing: bool,
+}
+
+#[tauri::command]
+pub fn workspace_info(app: AppHandle) -> Result<WorkspaceInfo, String> {
+    let root = workspace_root(&app)?;
+    let is_git_repo = root.join(".git").exists();
+    let git_missing = is_git_repo && !git_available();
+    Ok(WorkspaceInfo {
+        path: root.display().to_string(),
+        name: root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.display().to_string()),
+        is_git_repo,
+        git_missing,
+    })
+}
+
+// ── 文件系统 ─────────────────────────────────────────────────────────────────
+
+fn git_available() -> bool {
+    Command::new("git").arg("--version").output().is_ok()
+}
+
+/// 忽略的目录名（树与搜索共用）。
+fn is_ignored_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | "out"
+            | "coverage"
+            | "vendor"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".next"
+            | ".cache"
+            | "log"
+            | "logs"
+            | ".gradle"
+            | ".idea"
+    )
+}
+
+fn read_dir_sorted(dir: &Path) -> Result<Vec<std::fs::DirEntry>, String> {
+    let mut entries: Vec<std::fs::DirEntry> = dir
+        .read_dir()
+        .map_err(|e| format!("{}：{}", dir.display(), e))?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by(|a, b| {
+        let ad = a.path().is_dir();
+        let bd = b.path().is_dir();
+        bd.cmp(&ad).then_with(|| {
+            a.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .cmp(&b.file_name().to_string_lossy().to_lowercase())
+        })
+    });
+    Ok(entries)
+}
+
+/// 列出某目录一层内容（懒加载树）。dir 传空串 = 工作区根。
+#[tauri::command]
+pub fn fs_list(app: AppHandle, dir: String) -> Result<serde_json::Value, String> {
+    let root = workspace_root(&app)?;
+    let target = if dir.is_empty() {
+        root.canonicalize().map_err(|e| e.to_string())?
+    } else {
+        ensure_inside(&root, Path::new(&dir))?
+    };
+    if !target.is_dir() {
+        return Err(format!("不是目录：{}", target.display()));
+    }
+    let entries = read_dir_sorted(&target)?;
+    let items: Vec<serde_json::Value> = entries
+        .iter()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            !(e.path().is_dir() && is_ignored_dir(&name))
+        })
+        .map(|e| {
+            serde_json::json!({
+                "name": e.file_name().to_string_lossy(),
+                "path": e.path().display().to_string(),
+                "kind": if e.path().is_dir() { "dir" } else { "file" },
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "path": target.display().to_string(), "items": items }))
+}
+
+const TEXT_LIMIT: u64 = 1_500_000;
+const IMAGE_LIMIT: u64 = 8_000_000;
+
+fn image_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_string_lossy().to_lowercase().as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+/// 简单二进制嗅探：头部含 NUL 即视为二进制。
+fn looks_binary(buf: &[u8]) -> bool {
+    buf.iter().take(8192).any(|&b| b == 0)
+}
+
+#[tauri::command]
+pub fn fs_read(app: AppHandle, path: String) -> Result<serde_json::Value, String> {
+    let root = workspace_root(&app)?;
+    let target = ensure_inside(&root, Path::new(&path))?;
+    let meta = std::fs::metadata(&target).map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        return Err(format!("是目录而非文件：{}", target.display()));
+    }
+    let size = meta.len();
+    if let Some(mime) = image_mime(&target) {
+        if size > IMAGE_LIMIT {
+            return Ok(serde_json::json!({ "kind": "tooLarge", "size": size }));
+        }
+        let buf = std::fs::read(&target).map_err(|e| e.to_string())?;
+        return Ok(serde_json::json!({
+            "kind": "image",
+            "mime": mime,
+            "data": base64_encode(&buf),
+        }));
+    }
+    if size > TEXT_LIMIT {
+        return Ok(serde_json::json!({ "kind": "tooLarge", "size": size }));
+    }
+    let mut file = std::fs::File::open(&target).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    if looks_binary(&buf) {
+        return Ok(serde_json::json!({ "kind": "binary", "size": size }));
+    }
+    Ok(serde_json::json!({
+        "kind": "text",
+        "content": String::from_utf8_lossy(&buf).into_owned(),
+        "size": size,
+    }))
+}
+
+/// 极简 base64（无第三方依赖）。
+fn base64_encode(data: &[u8]) -> String {
+    const TBL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
+        out.push(TBL[(n >> 18) as usize & 63] as char);
+        out.push(TBL[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(TBL[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TBL[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn require_dir(app: &AppHandle, dir: &str) -> Result<PathBuf, String> {
+    let root = workspace_root(app)?;
+    let target = if dir.is_empty() {
+        root.canonicalize().map_err(|e| e.to_string())?
+    } else {
+        ensure_inside(&root, Path::new(dir))?
+    };
+    if !target.is_dir() {
+        return Err(format!("不是目录：{}", target.display()));
+    }
+    Ok(target)
+}
+
+#[tauri::command]
+pub fn fs_new_file(app: AppHandle, dir: String, name: String) -> Result<(), String> {
+    let target = require_dir(&app, &dir)?;
+    let path = target.join(&name);
+    ensure_parent_inside(&workspace_root(&app)?, &path)?;
+    if path.exists() {
+        return Err(format!("已存在：{}", name));
+    }
+    std::fs::File::create(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_mkdir(app: AppHandle, dir: String, name: String) -> Result<(), String> {
+    let target = require_dir(&app, &dir)?;
+    let path = target.join(&name);
+    ensure_parent_inside(&workspace_root(&app)?, &path)?;
+    std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_rename(app: AppHandle, path: String, new_name: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let target = ensure_inside(&root, Path::new(&path))?;
+    let dest = target
+        .parent()
+        .ok_or_else(|| String::from("路径缺少父目录"))?
+        .join(&new_name);
+    ensure_parent_inside(&root, &dest)?;
+    std::fs::rename(&target, &dest).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_delete(app: AppHandle, path: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let target = ensure_inside(&root, Path::new(&path))?;
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn fs_copy_path(path: String) -> Result<(), String> {
+    match arboard::Clipboard::new().and_then(|mut c| c.set_text(path)) {
+        Ok(()) => Ok(()),
+        Err(e) => Err(format!("复制失败：{}", e)),
+    }
+}
+
+#[tauri::command]
+pub fn fs_reveal(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root = workspace_root(&app)?;
+    let target = ensure_inside(&root, Path::new(&path))?;
+    app.opener()
+        .reveal_item_in_dir(target)
+        .map_err(|e| e.to_string())
+}
+
+// ── 搜索 ─────────────────────────────────────────────────────────────────────
+
+const SEARCH_MAX_FILES: usize = 200;
+const SEARCH_MAX_MATCHES: usize = 1000;
+const SEARCH_FILE_SIZE_LIMIT: u64 = 1_000_000;
+const SEARCH_MAX_PER_FILE: usize = 50;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub preview: String,
+}
+
+fn walk_files(dir: &Path, out: &mut Vec<PathBuf>, stop: &AtomicBool) {
+    if out.len() >= SEARCH_MAX_FILES * 4 || stop.load(Ordering::Relaxed) {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !is_ignored_dir(&name) && !name.starts_with(".") {
+                walk_files(&path, out, stop);
+            }
+        } else if path.is_file() {
+            let small = std::fs::metadata(&path).map(|m| m.len() <= SEARCH_FILE_SIZE_LIMIT).unwrap_or(false);
+            if small {
+                out.push(path);
+                if out.len() >= SEARCH_MAX_FILES * 4 {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub fn search_workspace(
+    app: AppHandle,
+    query: String,
+    case_sensitive: bool,
+) -> Result<Vec<SearchMatch>, String> {
+    let root = workspace_root(&app)?;
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = if case_sensitive { query } else { query.to_lowercase() };
+    let stop = AtomicBool::new(false);
+    let mut files = Vec::new();
+    walk_files(&root, &mut files, &stop);
+
+    let mut matches: Vec<SearchMatch> = Vec::new();
+    let mut files_scanned = 0usize;
+    'outer: for file in files {
+        if matches.len() >= SEARCH_MAX_MATCHES {
+            break;
+        }
+        let Ok(mut content) = std::fs::read(&file) else { continue };
+        if looks_binary(&content) {
+            continue;
+        }
+        files_scanned += 1;
+        if files_scanned > SEARCH_MAX_FILES {
+            break;
+        }
+        let text = String::from_utf8_lossy(&content).into_owned();
+        content.clear();
+        let hay = if case_sensitive { text.clone() } else { text.to_lowercase() };
+        let rel = file
+            .strip_prefix(&root)
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        let mut per_file = 0usize;
+        let mut offset = 0usize;
+        while let Some(pos) = hay[offset..].find(&needle) {
+            let abs = offset + pos;
+            let line_no = hay[..abs].matches(0x0A as char).count() + 1;
+            let col = abs - hay[..abs].rfind(0x0A as char).map(|i| i + 1).unwrap_or(0);
+            let line_start = hay[..abs].rfind(0x0A as char).map(|i| i + 1).unwrap_or(0);
+            let line_end = hay[abs..].find(0x0A as char).map(|i| abs + i).unwrap_or(hay.len());
+            let preview: String = hay[line_start..line_end].chars().take(200).collect();
+            matches.push(SearchMatch {
+                file: rel.clone(),
+                line: line_no,
+                col,
+                preview,
+            });
+            per_file += 1;
+            if per_file >= SEARCH_MAX_PER_FILE || matches.len() >= SEARCH_MAX_MATCHES {
+                continue 'outer;
+            }
+            offset = abs + needle.len();
+        }
+    }
+    Ok(matches)
+}
+
+// ── Git ──────────────────────────────────────────────────────────────────────
+
+/// 在工作区执行 git，返回 stdout；失败时错误带 stderr（截断）。
+fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                String::from("未检测到 git 命令。请安装 Git（macOS: xcode-select --install / Windows: Git for Windows）后重试。")
+            } else {
+                format!("执行 git 失败：{}", e)
+            }
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        let stderr = if stderr.len() > 600 {
+            format!("{}…", stderr.chars().rev().take(600).collect::<String>().chars().rev().collect::<String>())
+        } else {
+            stderr.to_string()
+        };
+        return Err(if stderr.is_empty() {
+            format!("git {} 失败（exit {:?}）", args.join(" "), output.status.code())
+        } else {
+            stderr
+        });
+    }
+    Ok(stdout)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitChange {
+    pub path: String,
+    pub status: String,
+    pub staged: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    pub branch: String,
+    pub ahead: usize,
+    pub behind: usize,
+    pub staged: Vec<GitChange>,
+    pub unstaged: Vec<GitChange>,
+}
+
+/// porcelain v1 -z：XY<space>path\0。X=暂存区，Y=工作区。
+#[tauri::command]
+pub fn git_status(app: AppHandle) -> Result<GitStatus, String> {
+    let root = workspace_root(&app)?;
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
+    let raw = git(&root, &["status", "--porcelain", "-z", "--branch"])?;
+    let mut branch = String::from("HEAD");
+    let mut ahead = 0usize;
+    let mut behind = 0usize;
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    for rec in raw.split(0u8 as char) {
+        if rec.is_empty() {
+            continue;
+        }
+        if let Some(rest) = rec.strip_prefix("## ") {
+            let head_line = rest.split('\0').next().unwrap_or(rest);
+            branch = head_line
+                .split("...")
+                .next()
+                .unwrap_or(head_line)
+                .trim_start_matches("No commits yet on ")
+                .to_string();
+            let marks = rest.split('\0').skip(1).collect::<Vec<_>>().join(" ");
+            for part in marks.split(|c: char| c == ',' || c == '[') {
+                let p = part.trim();
+                if let Some(n) = p.strip_prefix("ahead ") {
+                    ahead = n.trim_end_matches(']').parse().unwrap_or(0);
+                }
+                if let Some(n) = p.strip_prefix("behind ") {
+                    behind = n.trim_end_matches(']').parse().unwrap_or(0);
+                }
+            }
+            continue;
+        }
+        if rec.len() < 4 {
+            continue;
+        }
+        let x = rec.as_bytes()[0] as char;
+        let y = rec.as_bytes()[1] as char;
+        let file = rec[3..].trim_matches('"').to_string();
+        if x != '?' && x != ' ' {
+            staged.push(GitChange { path: file.clone(), status: x.to_string(), staged: true });
+        }
+        if y != ' ' || x == '?' {
+            let s = if x == '?' { "?".to_string() } else { y.to_string() };
+            unstaged.push(GitChange { path: file, status: s, staged: false });
+        }
+    }
+    Ok(GitStatus { branch, ahead, behind, staged, unstaged })
+}
+
+#[tauri::command]
+pub fn git_add(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let mut args: Vec<&str> = vec!["add", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    git(&root, &args).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_unstage(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let mut args: Vec<&str> = vec!["reset", "HEAD", "--"];
+    args.extend(paths.iter().map(|s| s.as_str()));
+    git(&root, &args).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let target = ensure_inside(&root, root.join(&path).as_path())?;
+    let raw = git(&root, &["status", "--porcelain", "-z", "--", &path])?;
+    let untracked = raw.split(0u8 as char).any(|rec| rec.starts_with("??"));
+    if untracked {
+        if target.is_dir() {
+            std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+        } else {
+            std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+        }
+    } else {
+        git(&root, &["checkout", "--", &path]).map(|_| ())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn git_commit(app: AppHandle, message: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let message = message.trim().to_string();
+    if message.is_empty() {
+        return Err(String::from("提交信息不能为空"));
+    }
+    git(&root, &["commit", "-m", &message]).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_push(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    git(&root, &["push"]).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_pull(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    git(&root, &["pull"]).map(|_| ())
+}
+
+#[tauri::command]
+pub fn git_diff_file(app: AppHandle, path: String, staged: bool) -> Result<String, String> {
+    let root = workspace_root(&app)?;
+    let mut args = vec!["diff", "--no-color"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(&path);
+    git(&root, &args)
+}
+
+// ── 侧栏窗口控制与工作区事件 ─────────────────────────────────────────────────
+
+/// 调整侧栏面板宽度并重排布局。
+#[tauri::command]
+pub fn set_sidebar_width(app: AppHandle, width: f64) -> Result<(), String> {
+    let width = width.clamp(260.0, 600.0);
+    SIDEBAR_PANEL_W.store(width.to_bits(), Ordering::SeqCst);
+    relayout(&app);
+    Ok(())
+}
+
+/// 折叠/展开侧栏面板（竖向图标条常驻）。
+#[tauri::command]
+pub fn toggle_sidebar(app: AppHandle) -> Result<bool, String> {
+    let next = !SIDEBAR_HIDDEN.load(Ordering::SeqCst);
+    SIDEBAR_HIDDEN.store(next, Ordering::SeqCst);
+    relayout(&app);
+    Ok(next)
+}
+
+fn relayout(app: &AppHandle) {
+    if let Some(window) = app.get_window("main") {
+        server::layout_main_window(&window);
+    }
+}
+
+/// 工作区变更：通知侧栏刷新（supervisor 线程调用）。
+pub fn emit_workspace_changed(app: &AppHandle, path: &Path) {
+    let _ = app.emit("dsh-sidebar-workspace", path.display().to_string());
+}
+
+#[tauri::command]
+pub fn open_viewer(
+    app: AppHandle,
+    path: String,
+    line: usize,
+    mode: String,
+) -> Result<(), String> {
+    let mut q = format!("mode={}", percent_encode(&mode));
+    if !path.is_empty() {
+        q.push_str(&format!("&path={}", percent_encode(&path)));
+    }
+    if line > 0 {
+        q.push_str(&format!("&line={}", line));
+    }
+    let script = format!("location.replace('viewer.html?{}')", q);
+    if let Some(existing) = app.get_webview_window("viewer") {
+        existing.eval(&script).map_err(|e| e.to_string())?;
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "viewer",
+        tauri::WebviewUrl::App("viewer.html".into()),
+    )
+    .title("查看文件")
+    .inner_size(900.0, 700.0)
+    .min_inner_size(520.0, 380.0)
+    .resizable(true)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
+    window.eval(&script).map_err(|e| e.to_string())
+}
+
+/// 极简百分号编码（查询串安全字符集）。
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}

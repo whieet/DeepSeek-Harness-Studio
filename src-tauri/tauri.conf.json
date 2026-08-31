@@ -27,7 +27,8 @@
     "resources": {
       "resources/dsh": "dsh",
       "resources/npm": "npm",
-      "resources/update": "update"
+      "resources/update": "update",
+      "resources/dsh-sidebar-bridge": "dsh-sidebar-bridge"
     },
     "externalBin": [
       "binaries/dsh-node"
