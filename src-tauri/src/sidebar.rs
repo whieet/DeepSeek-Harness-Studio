@@ -1151,11 +1151,16 @@ pub fn git_commit_files(app: AppHandle, hash: String) -> Result<Vec<GitCommitFil
     Ok(out)
 }
 
-/// 某提交的完整 diff（给查看器）。
+/// 某提交的 diff（给查看器）；path 非空时只看该文件。
 #[tauri::command]
-pub fn git_commit_diff(app: AppHandle, hash: String) -> Result<String, String> {
+pub fn git_commit_diff(app: AppHandle, hash: String, path: Option<String>) -> Result<String, String> {
     let root = workspace_root(&app)?;
-    git(&root, &["show", "--no-color", "--format=", &hash])
+    let mut args = vec!["show", "--no-color", "--format=", &hash];
+    if let Some(p) = path.as_deref().filter(|p| !p.trim().is_empty()) {
+        args.push("--");
+        args.push(p.trim());
+    }
+    git(&root, &args)
 }
 
 /// 撤销某提交（revert，生成反向提交，安全）。

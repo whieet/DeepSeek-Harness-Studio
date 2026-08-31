@@ -179,6 +179,10 @@
   .vsc-commit-body { min-width: 0; margin-left: 6px; }
   .vsc-commit-subj { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .vsc-commit-meta { color: var(--dim); font-size: 11px; }
+  .vsc-commit-files { padding: 2px 0 4px 40px; }
+  .vsc-commit-file { display: flex; gap: 6px; align-items: center; padding: 2px 6px; cursor: pointer; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .vsc-commit-file:hover { background: #ffffff14; }
+  .vsc-commit-file .vsc-cf-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .vsc-cshort { margin-left: auto; padding-left: 8px; color: #5a8bd8; font-family: ui-monospace, Menlo, monospace; font-size: 11px; flex: none; }
 </style>
 </head>
@@ -974,12 +978,36 @@ async function buildGraph(host) {
       +   '<div class="vsc-commit-meta">' + esc(c.author) + ' · ' + dateStr + (c.refs ? ' · ' + esc(c.refs) : "") + '</div>'
       + '</div>'
       + '<span class="vsc-cshort">' + esc(c.short) + '</span>';
+    const files = document.createElement("div");
+    files.className = "vsc-commit-files hidden";
+    files.dataset.loaded = "0";
     row.onclick = async () => {
-      try {
-        await invoke("open_viewer", { path: c.subject, mode: "commit-diff", hash: c.hash });
-      } catch (e) { toast(String(e), "err"); }
+      const isHidden = files.classList.contains("hidden");
+      if (isHidden && files.dataset.loaded === "0") {
+        files.dataset.loaded = "1";
+        files.innerHTML = '<div class="msg" style="padding:2px 0 2px 34px">加载中…</div>';
+        let fl;
+        try { fl = await invoke("git_commit_files", { hash: c.hash }); } catch (e) { files.innerHTML = '<div class="err" style="margin-left:34px">' + esc(e) + "</div>"; return; }
+        files.innerHTML = "";
+        if (!fl.length) { files.innerHTML = '<div class="msg" style="padding:2px 0 2px 34px">（无文件变更）</div>'; }
+        for (const f of fl) {
+          const fr = document.createElement("div");
+          fr.className = "vsc-commit-file";
+          fr.innerHTML = '<span class="vsc-st st-' + esc(f.status.slice(0, 1)) + '">' + esc(f.status.slice(0, 1)) + '</span><span class="vsc-cf-path">' + esc(f.path) + '</span>';
+          fr.title = "查看该文件在此提交中的 diff";
+          fr.onclick = async (ev) => {
+            ev.stopPropagation();
+            try {
+              await invoke("open_viewer", { path: f.path, mode: "commit-diff", hash: c.hash });
+            } catch (e) { toast(String(e), "err"); }
+          };
+          files.appendChild(fr);
+        }
+      }
+      files.classList.toggle("hidden");
     };
     box.appendChild(row);
+    box.insertBefore(files, row.nextSibling);
   });
 }
 
