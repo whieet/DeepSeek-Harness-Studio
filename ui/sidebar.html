@@ -1082,15 +1082,6 @@ function applyCollapse(hidden) {
   const glyph = hidden ? "«" : "»";
   $("bar-collapse").textContent = glyph;
   $("head-collapse").textContent = glyph;
-  // 折叠瞬间先隐藏面板内容：避免 webview 收缩时内容挤压重排产生闪烁；
-  // 展开时 bounds 变宽后再显示（延迟一帧），同理避免窄→宽重排闪动。
-  const panel = $("panel");
-  if (hidden) {
-    panel.style.visibility = "hidden";
-  } else {
-    panel.style.visibility = "hidden";
-    requestAnimationFrame(() => { requestAnimationFrame(() => { panel.style.visibility = ""; }); });
-  }
 }
 $("bar-collapse").onclick = doCollapse;
 $("head-collapse").onclick = doCollapse;
