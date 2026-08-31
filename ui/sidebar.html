@@ -793,7 +793,12 @@ async function toggleBranchMenu(current) {
     it.innerHTML = icon(b.current ? "CheckOutlined" : "BranchesOutlined") + ' ' + esc(b.name) + (b.upstream ? '<span class="vsc-menu-up">' + esc(b.upstream) + '</span>' : "");
     if (!b.current) it.onclick = async () => {
       menu.classList.add("hidden");
-      try { await invoke("git_checkout", { branch: b.name, newBranch: false }); toast("已切换到 " + b.name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+      try {
+        await invoke("git_checkout", { branch: b.name, newBranch: false });
+        const target = b.kind === "remote" && b.name.startsWith("origin/") ? b.name.slice(7) : b.name;
+        toast(b.kind === "remote" ? "已切换到 " + target + "（跟踪 " + b.name + "）" : "已切换到 " + target, "ok");
+        await refreshAll();
+      } catch (e) { toast(String(e), "err"); }
     };
     menu.appendChild(it);
   }

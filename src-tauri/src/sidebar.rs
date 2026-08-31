@@ -733,6 +733,38 @@ mod tests {
 
 
     #[test]
+    fn git_branches_and_remote_checkout() {
+        let dir = std::env::temp_dir().join(format!("dsh-git-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| git(&dir, args).expect("git 失败");
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "init"]);
+        // 伪造远程跟踪分支（免建裸仓库）
+        run(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+        let bs = git_branches_in(&dir).unwrap();
+        let local = bs.iter().find(|b| b.name == "main" && b.kind == "local");
+        let remote = bs.iter().find(|b| b.name == "origin/main" && b.kind == "remote");
+        assert!(local.is_some(), "{:?}", bs);
+        assert!(remote.is_some(), "{:?}", bs);
+        assert!(local.unwrap().current);
+
+        // 切到远程分支：应创建同名本地跟踪分支，而不是 detached HEAD
+        git_checkout_in(&dir, "origin/main", false).unwrap();
+        let cur = git(&dir, &["branch", "--show-current"]).unwrap();
+        assert_eq!(cur.trim(), "main", "应落在本地 main 而非 detached HEAD");
+        let st = git(&dir, &["status", "--porcelain", "--branch"]).unwrap();
+        assert!(st.starts_with("## main"), "不应出现 HEAD (no branch): {}", st.lines().next().unwrap());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn search_whole_word_filters_substrings() {
         let dir = std::env::temp_dir().join(format!("dsh-word-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -992,21 +1024,31 @@ pub fn git_init(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn git_branches(app: AppHandle) -> Result<Vec<GitBranch>, String> {
     let root = workspace_root(&app)?;
+    git_branches_in(&root)
+}
+
+fn git_branches_in(root: &Path) -> Result<Vec<GitBranch>, String> {
     if !root.join(".git").exists() {
         return Err(String::from("当前目录不是 git 仓库"));
     }
-    let raw = git(&root, &["branch", "-a", "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)"])?;
+    let raw = git(root, &["branch", "-a", "--format=%(HEAD)%00%(refname)%00%(upstream:short)"])?;
     let mut out = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() { continue; }
         let mut parts = line.split(' ');
         let head = parts.next().unwrap_or(" ").trim() == "*";
-        let name = parts.next().unwrap_or("").trim().to_string();
-        if name.is_empty() || name == "HEAD" { continue; }
+        let refname = parts.next().unwrap_or("").trim().to_string();
+        if refname.is_empty() { continue; }
         let upstream = parts.next().unwrap_or("").trim().to_string();
-        let kind = if name.starts_with("remotes/") { "remote" } else { "local" };
-        let display = name.strip_prefix("remotes/").unwrap_or(&name).to_string();
+        let (kind, display) = if let Some(n) = refname.strip_prefix("refs/heads/") {
+            ("local", n.to_string())
+        } else if let Some(n) = refname.strip_prefix("refs/remotes/") {
+            ("remote", n.to_string())
+        } else {
+            continue;
+        };
+        if display == "origin/HEAD" || display.ends_with("/HEAD") { continue; }
         out.push(GitBranch { name: display, kind: kind.to_string(), current: head, upstream });
     }
     out.sort_by(|a, b| b.current.cmp(&a.current).then(a.name.cmp(&b.name)));
@@ -1014,16 +1056,37 @@ pub fn git_branches(app: AppHandle) -> Result<Vec<GitBranch>, String> {
 }
 
 /// 切换分支；new_branch 为 true 时先创建。
+/// 目标为远程分支（origin/xxx）时：本地有同名分支直接切，否则创建跟踪分支——避免 detached HEAD。
 #[tauri::command]
 pub fn git_checkout(app: AppHandle, branch: String, new_branch: bool) -> Result<(), String> {
     let root = workspace_root(&app)?;
+    git_checkout_in(&root, &branch, new_branch)
+}
+
+fn git_checkout_in(root: &Path, branch: &str, new_branch: bool) -> Result<(), String> {
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
     let branch = branch.trim();
     if branch.is_empty() {
         return Err(String::from("分支名不能为空"));
     }
-    let mut args: Vec<&str> = if new_branch { vec!["checkout", "-b"] } else { vec!["checkout"] };
-    args.push(branch);
-    git(&root, &args).map(|_| ())
+    if new_branch {
+        git(root, &["checkout", "-b", branch]).map(|_| ())
+    } else if let Some(local) = branch.strip_prefix("origin/") {
+        if local.is_empty() || local == "HEAD" {
+            return Err(format!("无法切换到 {}", branch));
+        }
+        let full = format!("refs/heads/{}", local);
+        let exists = git(root, &["show-ref", "--verify", "--quiet", &full]).is_ok();
+        if exists {
+            git(root, &["checkout", local]).map(|_| ())
+        } else {
+            git(root, &["checkout", "-b", local, "--track", branch]).map(|_| ())
+        }
+    } else {
+        git(root, &["checkout", branch]).map(|_| ())
+    }
 }
 
 /// 提交历史（最近 max 条）。
