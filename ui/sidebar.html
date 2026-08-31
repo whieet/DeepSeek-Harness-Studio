@@ -7,7 +7,7 @@
   :root { color-scheme: dark; --bg:#1e1f22; --bg2:#252629; --line:#333438; --fg:#d4d4d4; --dim:#8b8f98; --acc:#2e7cf6; --add:#6ecf97; --mod:#e2c08d; --del:#e07a7a; --un:#a6c98a; }
   * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
   html, body { height: 100%; }
-  body { display: flex; overflow: hidden; font: 12px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); overflow: hidden; }
+  body { display: flex; font: 12px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); overflow: hidden; }
   /* 面板内容区（左） + 拖拽条 + Activity Bar（右，贴窗口缘） */
   #panel { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
   #dragbar { flex: 0 0 5px; cursor: col-resize; background: var(--bg); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
@@ -227,7 +227,6 @@ let wsInfo = null;          // workspace_info 结果
 let gitMap = new Map();     // path -> status 字母（树装饰用）
 let activeTab = "files";
 let panelCollapsed = false;
-let collapsing = false;
 const treeState = new Map(); // dirPath -> {open, children, loaded}
 let ctxMenu = null;
 
@@ -1052,12 +1051,13 @@ function switchTab(name) {
 async function onTabClick(name) {
   if (panelCollapsed) {
     switchTab(name);
-    doCollapse();
+    try { applyCollapse(await invoke("toggle_sidebar")); } catch (e) { alert(String(e)); }
     return;
   }
   if (activeTab === name) {
-    // 已激活：收起（保留激活态高亮）；走统一动画编排
-    doCollapse();
+    // 已激活：收起（保留激活态高亮）；先隐藏内容再平移，避免残影
+    $("panel").style.visibility = "hidden";
+    try { applyCollapse(await invoke("toggle_sidebar")); } catch (e) { alert(String(e)); }
     return;
   }
   switchTab(name);
@@ -1070,56 +1070,13 @@ $("head-refresh").onclick = async () => {
   else if (activeTab === "git") { await refreshAll(); }
   else if (activeTab === "search") await runSearch();
 };
-// ── 折叠/展开动画编排（全部为 webview 内 CSS transform，GPU 合成零重排；Rust 平移发生在内容不可见时刻）──
-const COLLAPSE_MS = 130;
-function barShift(px, animate) {
-  const bar = $("bar");
-  bar.style.transition = animate ? "transform " + COLLAPSE_MS + "ms ease" : "none";
-  bar.style.transform = px === 0 ? "" : "translateX(" + px + "px)";
-}
-function panelShift(px, animate) {
-  const panel = $("panel");
-  panel.style.transition = animate ? "transform " + COLLAPSE_MS + "ms ease" : "none";
-  panel.style.transform = px === 0 ? "" : "translateX(" + px + "px)";
-}
-function doCollapse() {
-  if (collapsing) return;
-  collapsing = true;
-  if (!panelCollapsed) {
-    // 折叠：面板与拖拽条滑向右侧图标条下方（transform 动画，无重排）
-    const w = document.getElementById("panel").offsetWidth;
-    panelShift(w, true);
-    $("dragbar").style.visibility = "hidden";
-    barShift(-w, true);
-    setTimeout(async () => {
-      $("bar").style.visibility = "hidden";
-      barShift(0, false);          // 图标条在不可见时归位到 webview 原点
-      try {
-        const hidden = await invoke("toggle_sidebar");   // Rust 平移 webview 出屏，只留 44px
-        applyCollapse(hidden);
-        $("bar").style.visibility = "";
-      } catch (e) { alert(String(e)); }
-      collapsing = false;
-    }, COLLAPSE_MS + 20);
-  } else {
-    // 展开：先在不可见状态下把图标条预置到 webview 内 x=panel_w 处，再触发 Rust 平移回屏——
-    // 平移完成后图标条屏幕位置与折叠时一致（无跳变），随后播放滑入动画
-    barShift($("panel").offsetWidth || 300, false);
-    (async () => {
-      try {
-        const hidden = await invoke("toggle_sidebar");
-        applyCollapse(hidden);
-        // 双 rAF 确保 bounds 平移已合成，然后滑入
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          $("bar").style.visibility = "";
-          $("panel").style.visibility = "";
-          barShift(0, true);
-          panelShift(0, true);
-          setTimeout(() => { collapsing = false; barShift(0, false); panelShift(0, false); }, COLLAPSE_MS + 20);
-        }));
-      } catch (e) { applyCollapse(true); alert(String(e)); collapsing = false; }
-    })();
-  }
+async function doCollapse() {
+  // 折叠：先本地隐藏面板内容（同步、零延迟），再触发 Rust 平移 webview——残影不可能出现在隐藏之后
+  if (!panelCollapsed) $("panel").style.visibility = "hidden";
+  try {
+    const hidden = await invoke("toggle_sidebar");
+    applyCollapse(hidden);
+  } catch (e) { applyCollapse(true); alert(String(e)); }
 }
 function applyCollapse(hidden) {
   panelCollapsed = hidden;
@@ -1128,11 +1085,14 @@ function applyCollapse(hidden) {
   const glyph = hidden ? "«" : "»";
   $("bar-collapse").textContent = glyph;
   $("head-collapse").textContent = glyph;
+  // 折叠瞬间先隐藏面板内容：避免 webview 收缩时内容挤压重排产生闪烁；
+  // 展开时 bounds 变宽后再显示（延迟一帧），同理避免窄→宽重排闪动。
+  const panel = $("panel");
   if (hidden) {
-    $("panel").style.visibility = "hidden";
+    panel.style.visibility = "hidden";
   } else {
-    // 展开由动画流程恢复可见；此处仅兜底（非动画路径）
-    if (!collapsing) $("panel").style.visibility = "";
+    panel.style.visibility = "hidden";
+    requestAnimationFrame(() => { requestAnimationFrame(() => { panel.style.visibility = ""; }); });
   }
 }
 $("bar-collapse").onclick = doCollapse;
