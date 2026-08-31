@@ -18,6 +18,10 @@ const ICONS = [
   "CloseOutlined",
   "EllipsisOutlined",
   "ReloadOutlined",
+  "PlusOutlined",
+  "CheckOutlined",
+  "ArrowDownOutlined",
+  "ArrowUpOutlined",
   "HistoryOutlined",
   "RightOutlined",
 ];

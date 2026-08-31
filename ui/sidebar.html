@@ -15,8 +15,8 @@
   #bar { flex: 0 0 44px; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 2px; }
   .tab { width: 36px; height: 36px; border: none; background: none; color: var(--dim); font-size: 17px; border-radius: 6px; cursor: pointer; position: relative; }
   .tab:hover { color: var(--fg); }
-  .tab.active { color: #fff; background: #33353b; }
-  .tab.active::before { content: ""; position: absolute; right: -4px; top: 8px; bottom: 8px; width: 2px; background: var(--acc); border-radius: 1px; }
+  .tab.active { color: #fff; background: none; }
+  .tab.active::before { content: ""; position: absolute; left: -4px; top: 6px; bottom: 6px; width: 2px; background: #fff; border-radius: 0; }
   .tab .badge { position: absolute; right: 2px; bottom: 2px; background: var(--acc); color: #fff; font-size: 9px; min-width: 14px; border-radius: 7px; padding: 0 3px; line-height: 14px; }
   .hidden { display: none !important; }
   #panel.collapsed #panel-body { display: none; }
@@ -85,10 +85,10 @@
   .matchline .ln { color: #5a8bd8; margin-right: 6px; }
 
   /* Git 面板 */
-  .section-head { display: flex; align-items: center; padding: 4px 10px; font-weight: 600; color: var(--dim); background: #ffffff06; }
+  .section-head { display: flex; align-items: center; padding: 0 10px; height: 22px; font-size: 11px; font-weight: 700; letter-spacing: .4px; margin-top: 6px; font-weight: 600; color: var(--dim); background: #ffffff06; }
   .section-head .act { margin-left: auto; color: var(--dim); cursor: pointer; padding: 0 4px; }
   .section-head .act:hover { color: var(--fg); }
-  .gfile { display: flex; align-items: center; gap: 6px; padding: 2.5px 10px; cursor: pointer; }
+  .gfile { display: flex; align-items: center; gap: 6px; padding: 0 10px; height: 22px; cursor: pointer; }
   .gfile:hover { background: #ffffff0d; }
   .gfile .st { font-weight: 700; width: 12px; }
   .gfile .st.M { color: var(--mod); } .gfile .st.A { color: var(--add); } .gfile .st.U { color: var(--add); }
@@ -107,6 +107,65 @@
   #git-toast { padding: 6px 10px; font-size: 11px; color: var(--dim); word-break: break-all; }
   #git-toast.err { color: var(--del); }
   #git-toast.ok { color: var(--add); }
+
+  /* ── VSCode 源代码管理还原 ── */
+  .vsc-btn { background: var(--acc); color: #fff; border: none; border-radius: 4px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  .vsc-topbar { position: relative; display: flex; align-items: center; justify-content: space-between; padding: 5px 12px; border-bottom: 1px solid var(--line); }
+  .vsc-branch { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; padding: 3px 6px; border-radius: 4px; }
+  .vsc-branch:hover { background: #ffffff14; }
+  .vsc-branch svg.anticon:last-child { width: 10px; height: 10px; opacity: .7; }
+  .vsc-actions { display: flex; align-items: center; gap: 10px; color: var(--dim); }
+  .vsc-sync { display: inline-flex; align-items: center; gap: 2px; }
+  .vsc-sync svg.anticon { width: 12px; height: 12px; }
+  .vsc-sync-badge { font-size: 11px; min-width: 8px; }
+  .vsc-ico { display: inline-flex; cursor: pointer; padding: 3px; border-radius: 4px; }
+  .vsc-ico:hover { background: #ffffff14; color: var(--fg); }
+  .vsc-menu { position: absolute; top: 34px; left: 8px; min-width: 220px; background: #1f1f22; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px #00000066; z-index: 50; padding: 4px 0; }
+  .vsc-menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 12px; cursor: pointer; }
+  .vsc-menu-item:hover { background: var(--acc); color: #fff; }
+  .vsc-menu-item.current { font-weight: 700; }
+  .vsc-menu-item svg.anticon { width: 13px; height: 13px; }
+  .vsc-menu-sh { padding: 4px 12px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  .vsc-menu-up { margin-left: auto; color: var(--dim); font-size: 11px; }
+  .vsc-menu-item:hover .vsc-menu-up { color: #fff; }
+  .vsc-checkout { padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  .vsc-checkout input { width: 100%; background: #141518; border: 1px solid var(--acc); color: var(--fg); border-radius: 4px; padding: 5px 8px; font: inherit; outline: none; box-sizing: border-box; }
+  .vsc-checkout-hint { color: var(--dim); font-size: 10px; margin-top: 3px; }
+  .vsc-commit { position: relative; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .vsc-commit textarea { width: 100%; background: #141518; border: 1px solid var(--line); color: var(--fg); border-radius: 4px; padding: 6px 8px; padding-right: 30px; font: inherit; resize: none; outline: none; box-sizing: border-box; }
+  .vsc-commit textarea:focus { border-color: var(--acc); }
+  .vsc-commit #commit-btn { position: absolute; top: 12px; right: 14px; background: none; border: none; color: var(--acc); cursor: pointer; padding: 2px; }
+  .vsc-commit #commit-btn:disabled { color: var(--dim); opacity: .5; cursor: default; }
+  .vsc-commit #commit-btn svg.anticon { width: 15px; height: 15px; }
+  .vsc-sechead { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
+  .vsc-sechead:hover { background: #ffffff0d; }
+  .vsc-sechead .chev { display: inline-flex; }
+  .vsc-sechead .chev svg.anticon { width: 10px; height: 10px; transition: transform .1s; }
+  .vsc-section.closed .chev svg.anticon { transform: rotate(-90deg); }
+  .vsc-section.closed .vsc-file, .vsc-graph.closed { display: none; }
+  .vsc-sechead .cnt { color: var(--dim); font-size: 11px; }
+  .vsc-sechead .act { margin-left: auto; color: var(--dim); font-size: 11px; cursor: pointer; padding: 1px 6px; border-radius: 4px; }
+  .vsc-sechead .act:hover { background: #ffffff14; color: var(--fg); }
+  .vsc-file { display: flex; align-items: center; padding: 3px 10px 3px 24px; cursor: pointer; }
+  .vsc-file:hover { background: #ffffff0d; }
+  .vsc-file:hover .vsc-ops { display: inline-flex; }
+  .vsc-st { width: 14px; flex: none; font-weight: 700; font-size: 11px; }
+  .st-M { color: #e2c08d; } .st-A, .st-U { color: #81b88b; } .st-D { color: #c74e39; } .st-\? { color: #73c991; }
+  .vsc-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vsc-fdir { color: var(--dim); }
+  .vsc-ops { margin-left: auto; display: none; gap: 2px; }
+  .vsc-op { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 5px; color: var(--fg); }
+  .vsc-op:hover { background: #ffffff1f; }
+  .vsc-op.danger:hover { background: #c74e3933; color: #e2655c; }
+  .vsc-graph { padding-bottom: 4px; }
+  .graph-head { cursor: pointer; }
+  .vsc-commit-row { display: flex; align-items: center; padding: 3px 10px 3px 14px; cursor: pointer; }
+  .vsc-commit-row:hover { background: #ffffff0d; }
+  .vsc-commit-row .rail { width: 14px; height: 24px; flex: none; }
+  .vsc-commit-body { min-width: 0; margin-left: 6px; }
+  .vsc-commit-subj { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vsc-commit-meta { color: var(--dim); font-size: 11px; }
+  .vsc-cshort { margin-left: auto; padding-left: 8px; color: #5a8bd8; font-family: ui-monospace, Menlo, monospace; font-size: 11px; flex: none; }
 </style>
 </head>
 <body>
@@ -573,12 +632,14 @@ function highlight(text, q, cs) {
   return t.replace(re, (m) => '<span class="mark">' + m + "</span>");
 }
 
-// ── Git 面板 ──
+// ── Git 面板（VSCode 源代码管理还原）──
+const GIT_ST_LABEL = { M: "M", A: "A", D: "D", U: "U", R: "R", C: "C", "?": "U" };
+
 async function renderGit() {
   const host = $("view-git");
   if (!wsInfo) { host.innerHTML = ""; return; }
   if (!wsInfo.isGitRepo) {
-    host.innerHTML = '<div class="msg">当前目录不是 git 仓库。</div><div style="padding:10px"><button id="git-init-btn" class="linkbtn">初始化仓库</button></div><div id="git-toast"></div>';
+    host.innerHTML = '<div class="msg">当前文件夹未进行源代码管理。</div><div style="padding:10px"><button id="git-init-btn" class="vsc-btn">初始化仓库</button></div><div id="git-toast"></div>';
     $("git-init-btn").onclick = async () => {
       try {
         await invoke("git_init");
@@ -600,218 +661,202 @@ async function renderGit() {
     return;
   }
   host.innerHTML = "";
-  const head = document.createElement("div");
-  head.className = "section-head";
-  head.innerHTML = icon("BranchesOutlined") + " " + esc(st.branch) +
-    (st.ahead || st.behind ? " <span style=\"color:var(--dim)\">↑" + st.ahead + " ↓" + st.behind + "</span>" : "");
-  host.appendChild(head);
-  const sec = (title, files, ops) => {
-    if (!files.length) return;
-    const sh = document.createElement("div");
-    sh.className = "section-head";
-    sh.innerHTML = esc(title);
-    for (const [label, fn] of ops.all || []) {
-      const a = document.createElement("span");
-      a.className = "act";
-      a.textContent = label;
-      a.onclick = fn;
-      sh.appendChild(a);
-    }
-    host.appendChild(sh);
-    for (const f of files) {
-      const row = document.createElement("div");
-      row.className = "gfile";
-      const stCls = f.status === "?" ? "q" : f.status;
-      let html = '<span class="st ' + stCls + '">' + esc(f.status) + '</span><span class="name" title="' + esc(f.path) + '">' + esc(f.path) + "</span>";
-      for (const [label, fn, danger] of ops.each) {
-        const cls = danger ? "op danger" : "op";
-        html += '<span class="' + cls + '" data-op="' + label + '">' + label + "</span>";
-      }
-      row.innerHTML = html;
-      row.addEventListener("click", (ev) => {
-        if (ev.target.classList.contains("op")) return;
-        const mode = f.staged ? "diff-staged" : "diff";
-        invoke("open_viewer", { path: f.path, mode });
-      });
-      row.querySelectorAll(".op").forEach((el) => {
-        el.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          ops.each.find(([label]) => label === el.dataset.op)[1](f);
-        });
-      });
-      host.appendChild(row);
-    }
-  };
-  sec("已暂存", st.staged, {
-    all: [["全部取消", () => act("git_unstage", st.staged.map((f) => f.path))]],
-    each: [["−", (f) => act("git_unstage", [f.path])]],
-  });
-  sec("更改", st.unstaged, {
-    all: [["全部暂存", () => act("git_add", st.unstaged.map((f) => f.path))]],
-    each: [
-      ["+", (f) => act("git_add", [f.path])],
-      ["↩", (f) => {
-        if (confirm("放弃 " + f.path + " 的全部更改？此操作不可撤销。")) act("git_discard", [f.path]);
-      }, true],
-    ],
-  });
-  if (!st.staged.length && !st.unstaged.length) {
-    const clean = document.createElement("div");
-    clean.className = "msg";
-    clean.textContent = "工作区干净，没有更改。";
-    host.appendChild(clean);
-  }
+
+  // ── 顶部：分支（点击弹菜单）+ 同步 ──
+  const topbar = document.createElement("div");
+  topbar.className = "vsc-topbar";
+  const syncPart = (st.ahead || st.behind)
+    ? '<span class="vsc-sync"><span class="vsc-sync-badge">' + (st.ahead || "") + '</span>' + icon("ArrowUpOutlined") + '<span class="vsc-sync-badge">' + (st.behind || "") + '</span>' + icon("ArrowDownOutlined") + '</span>'
+    : "";
+  topbar.innerHTML =
+    '<div class="vsc-branch" id="vsc-branch">' + icon("BranchesOutlined") + '<span>' + esc(st.branch) + '</span>' + icon("CaretDownOutlined") + '</div>'
+    + '<div class="vsc-actions">' + syncPart + '<span class="vsc-ico" id="vsc-refresh" title="刷新">' + icon("ReloadOutlined") + '</span></div>'
+    + '<div id="vsc-branch-menu" class="vsc-menu hidden"></div>'
+    + '<div id="vsc-checkout-box" class="vsc-checkout hidden"><input id="vsc-checkout-input" placeholder="分支名（回车创建并切换）" /><div class="vsc-checkout-hint">Esc 取消</div></div>'
+  ;
+  host.appendChild(topbar);
+  $("vsc-refresh").onclick = () => renderGit();
+  $("vsc-branch").onclick = (ev) => { ev.stopPropagation(); toggleBranchMenu(st.branch); };
+
+  // ── 提交框（置顶，VSCode 位置）──
   const box = document.createElement("div");
-  box.id = "commit-box";
+  box.className = "vsc-commit";
   box.innerHTML =
-    '<textarea id="commit-msg" placeholder="提交信息（⌘Enter 提交）"></textarea>' +
-    '<button id="commit-btn"' + (st.staged.length ? "" : " disabled") + '>✓ 提交</button>' +
-    '<div class="btnrow"><button class="linkbtn secondary" id="pull-btn">拉取</button><button class="linkbtn secondary" id="push-btn">推送</button></div>' +
-    '<div id="git-toast"></div>';
+    '<textarea id="commit-msg" rows="2" placeholder="消息 (⌘Enter 提交，空提交 ⌘⇧Enter)"></textarea>'
+    + '<button id="commit-btn" title="提交"' + (st.staged.length ? "" : " disabled") + '>' + icon("CheckOutlined") + '</button>'
+  ;
   host.appendChild(box);
   $("commit-btn").onclick = async () => {
     const msg = $("commit-msg").value.trim();
     if (!msg) return;
     try {
       await invoke("git_commit", { message: msg });
-      toast("已提交：" + msg, "ok");
+      toast("已提交", "ok");
       await refreshAll();
     } catch (e) { toast(String(e), "err"); }
   };
   $("commit-msg").addEventListener("keydown", (ev) => {
-    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") $("commit-btn").click();
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") { ev.preventDefault(); $("commit-btn").click(); }
   });
-  $("push-btn").onclick = () => act("git_push");
-  $("pull-btn").onclick = () => act("git_pull");
-  buildBranchPanel(host, st.branch);
-  buildHistoryPanel(host);
-  const ib = $("git-init-btn");
-  if (ib) ib.onclick = async () => {
-    try {
-      await invoke("git_init");
-      toast("已初始化 git 仓库", "ok");
-      await refreshAll();
-    } catch (e) { toast(String(e), "err"); }
-  };
-}
-// 分支面板：head 行点击展开，本地/远程分组，可切换/新建。
-async function buildBranchPanel(host, current) {
-  const row = document.createElement("div");
-  row.className = "branch-head";
-  row.innerHTML = '<span class="branch-name">' + esc(current) + '<span class="caret">' + icon("CaretDownOutlined") + "</span></span><span class=\"act\">切换分支</span>";
-  host.appendChild(row);
-  const box = document.createElement("div");
-  box.style.display = "none";
-  host.appendChild(box);
-  row.addEventListener("click", async () => {
-    if (box.style.display === "none") {
-      box.style.display = "";
-      if (!box.dataset.loaded) {
-        box.dataset.loaded = "1";
-        await loadBranchList(box, current);
-      }
-    } else box.style.display = "none";
-  });
-}
 
-async function loadBranchList(box, current) {
-  box.innerHTML = '<div class="msg">加载中…</div>';
-  let branches;
-  try { branches = await invoke("git_branches"); } catch (e) { box.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
-  box.innerHTML = "";
-  const newBox = document.createElement("div");
-  newBox.className = "newbranch-box";
-  newBox.innerHTML = '<input id="new-branch-input" placeholder="新分支名…" />';
-  const btn = document.createElement("button");
-  btn.className = "linkbtn";
-  btn.textContent = "新建并切换";
-  btn.onclick = async () => {
-    const name = newBox.querySelector("input").value.trim();
-    if (!name) return;
-    try { await invoke("git_checkout", { branch: name, newBranch: true }); toast("已创建并切换到 " + name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
-  };
-  newBox.appendChild(btn);
-  box.appendChild(newBox);
-  newBox.querySelector("input").addEventListener("keydown", (ev) => { if (ev.key === "Enter") btn.click(); });
-  for (const kind of ["local", "remote"]) {
-    const list = branches.filter((b) => b.kind === kind);
-    if (!list.length) continue;
+  // ── 分组（可折叠 section，VSCode 样式）──
+  const sec = (title, files, ops) => {
+    if (!files.length) return;
+    const wrap = document.createElement("div");
+    wrap.className = "vsc-section";
     const sh = document.createElement("div");
-    sh.className = "section-head";
-    sh.textContent = kind === "local" ? "本地分支" : "远程分支";
-    box.appendChild(sh);
-    for (const b of list) {
-      const row = document.createElement("div");
-      row.className = "branch-row" + (b.current ? " current" : "");
-      row.innerHTML = icon(b.current ? "CaretRightOutlined" : "BranchesOutlined") + ' <span>' + esc(b.name) + "</span>" + (b.upstream ? ' <span class="pkind">' + esc(b.upstream) + "</span>" : "");
-      if (!b.current) row.addEventListener("click", async () => {
-        try { await invoke("git_checkout", { branch: b.name, newBranch: false }); toast("已切换到 " + b.name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
-      });
-      box.appendChild(row);
+    sh.className = "vsc-sechead";
+    sh.innerHTML = '<span class="chev">' + icon("CaretDownOutlined") + '</span><span>' + esc(title) + '</span><span class="cnt">' + files.length + '</span>';
+    const list = document.createElement("div");
+    sh.onclick = () => { wrap.classList.toggle("closed"); };
+    for (const [label, fn] of ops.all || []) {
+      const a = document.createElement("span");
+      a.className = "act";
+      a.textContent = label;
+      a.onclick = (ev) => { ev.stopPropagation(); fn(); };
+      sh.appendChild(a);
     }
-  }
-}
+    wrap.appendChild(sh);
+    wrap.appendChild(list);
+    for (const f of files) {
+      const code = f.status === "?" ? "?" : (f.status || "M").slice(0, 1);
+      const row = document.createElement("div");
+      row.className = "vsc-file";
+      const fname = f.path.split("/").pop();
+      const fdir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : "";
+      let html = '<span class="vsc-st st-' + esc(code) + '">' + esc(GIT_ST_LABEL[code] || code) + '</span>'
+        + '<span class="vsc-fname">' + esc(fname) + (fdir ? ' <span class="vsc-fdir">' + esc(fdir) + '</span>' : "") + '</span>'
+        + '<span class="vsc-ops">';
+      for (const [label, fn, danger, title] of ops.each || []) {
+        html += '<span class="vsc-op' + (danger ? " danger" : "") + '" data-op="' + label + '" title="' + (title || label) + '">' + label + '</span>';
+      }
+      html += '</span>';
+      row.innerHTML = html;
+      row.addEventListener("click", (ev) => {
+        if (ev.target.closest(".vsc-op")) return;
+        const mode = f.staged ? "diff-staged" : "diff";
+        invoke("open_viewer", { path: f.path, mode });
+      });
+      row.querySelectorAll(".vsc-op").forEach((el) => {
+        el.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          (ops.each || []).find(([label]) => label === el.dataset.op)[1](f);
+        });
+      });
+      list.appendChild(row);
+    }
+    host.appendChild(wrap);
+  };
 
-// 历史面板：按钮展开/收起，条目点击展开文件列表，文件点击查看该提交 diff。
-async function buildHistoryPanel(host) {
-  const sh = document.createElement("div");
-  sh.className = "section-head";
-  sh.innerHTML = icon("HistoryOutlined") + " <span>提交历史</span>";
-  sh.style.cursor = "pointer";
-  host.appendChild(sh);
-  const box = document.createElement("div");
-  box.style.display = "none";
-  host.appendChild(box);
-  sh.addEventListener("click", async () => {
-    if (box.style.display === "none") {
-      box.style.display = "";
-      if (!box.dataset.loaded) { box.dataset.loaded = "1"; await loadHistory(box); }
-    } else box.style.display = "none";
+  sec("暂存的更改", st.staged, {
+    all: [["全部取消", () => act("git_unstage", st.staged.map((f) => f.path))]],
+    each: [
+      ["−", (f) => act("git_unstage", [f.path]), false, "取消暂存"],
+    ],
   });
+  sec("更改", st.unstaged, {
+    all: [["全部暂存", () => act("git_add", st.unstaged.map((f) => f.path))]],
+    each: [
+      ["+", (f) => act("git_add", [f.path]), false, "暂存"],
+      ["↩", (f) => { if (confirm("放弃 " + f.path + " 的全部更改？此操作不可撤销。")) act("git_discard", [f.path]); }, true, "放弃更改"],
+    ],
+  });
+  if (!st.staged.length && !st.unstaged.length) {
+    const clean = document.createElement("div");
+    clean.className = "msg";
+    clean.textContent = "没有更改";
+    host.appendChild(clean);
+  }
+
+  // ── 图形提交历史（VSCode Graph 风格）──
+  buildGraph(host);
 }
 
-async function loadHistory(box) {
+// 分支菜单：切换分支 / 新建分支（VSCode quick-pick 简化）。
+async function toggleBranchMenu(current) {
+  const menu = $("vsc-branch-menu");
+  if (!menu.classList.contains("hidden")) { menu.classList.add("hidden"); return; }
+  menu.innerHTML = '<div class="vsc-menu-item" id="vsc-menu-new">' + icon("PlusOutlined") + ' 新建分支…</div>';
+  let branches = [];
+  try { branches = await invoke("git_branches"); } catch (e) { /* ignore */ }
+  const locals = branches.filter((b) => b.kind === "local");
+  if (locals.length) {
+    const sh = document.createElement("div");
+    sh.className = "vsc-menu-sh";
+    sh.textContent = "本地分支";
+    menu.appendChild(sh);
+  }
+  for (const b of locals) {
+    const it = document.createElement("div");
+    it.className = "vsc-menu-item" + (b.current ? " current" : "");
+    it.innerHTML = icon(b.current ? "CheckOutlined" : "BranchesOutlined") + ' ' + esc(b.name) + (b.upstream ? '<span class="vsc-menu-up">' + esc(b.upstream) + '</span>' : "");
+    if (!b.current) it.onclick = async () => {
+      menu.classList.add("hidden");
+      try { await invoke("git_checkout", { branch: b.name, newBranch: false }); toast("已切换到 " + b.name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+    };
+    menu.appendChild(it);
+  }
+  menu.classList.remove("hidden");
+  const close = (ev) => { if (!menu.contains(ev.target) && !ev.target.closest("#vsc-branch")) { menu.classList.add("hidden"); document.removeEventListener('click', close); } };
+  setTimeout(() => document.addEventListener("click", close), 0);
+  $("vsc-menu-new").onclick = () => {
+    menu.classList.add("hidden");
+    const cb = $("vsc-checkout-box");
+    cb.classList.remove("hidden");
+    const inp = $("vsc-checkout-input");
+    inp.focus();
+    inp.onkeydown = async (ev) => {
+      if (ev.key === "Escape") cb.classList.add("hidden");
+      if (ev.key === "Enter") {
+        const name = inp.value.trim();
+        if (!name) return;
+        cb.classList.add("hidden");
+        try { await invoke("git_checkout", { branch: name, newBranch: true }); toast("已创建并切换到 " + name, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+      }
+    };
+  };
+}
+
+// Graph 风格提交历史：左侧点列 + 右侧消息行。
+async function buildGraph(host) {
+  const sh = document.createElement("div");
+  sh.className = "vsc-sechead graph-head";
+  sh.innerHTML = '<span class="chev">' + icon("CaretDownOutlined") + '</span><span>提交历史</span>';
+  const box = document.createElement("div");
+  box.className = "vsc-graph";
+  sh.appendChild(box);
+  host.appendChild(sh);
   box.innerHTML = '<div class="msg">加载中…</div>';
   let commits;
   try { commits = await invoke("git_log", { max: 50 }); } catch (e) { box.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
   box.innerHTML = "";
   if (!commits.length) { box.innerHTML = '<div class="msg">暂无提交</div>'; return; }
-  for (const c of commits) {
-    const item = document.createElement("div");
-    item.className = "commit-item";
+  const COLORS = ["#4ab8e8", "#c586c0", "#ce9178", "#89d185", "#dcdcaa"];
+  commits.forEach((c, i) => {
+    const color = COLORS[i % COLORS.length];
+    const last = i === commits.length - 1;
+    const row = document.createElement("div");
+    row.className = "vsc-commit-row";
+    const rail = last
+      ? '<svg class="rail"><circle cx="7" cy="7" r="3.5" fill="' + color + '"/></svg>'
+      : '<svg class="rail"><line x1="7" y1="0" x2="7" y2="24" stroke="' + color + '" stroke-width="1.5"/><circle cx="7" cy="7" r="3.5" fill="' + color + '"/></svg>';
     const date = new Date(c.time * 1000);
-    const dateStr = date.getMonth() + 1 + "/" + date.getDate() + " " + String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
-    item.innerHTML = '<div class="commit-head"><span class="cshort">' + esc(c.short) + '</span><span class="csubj">' + esc(c.subject) + '</span></div><div class="cmeta">' + esc(c.author) + " · " + dateStr + (c.refs ? " · " + esc(c.refs) : "") + "</div>";
-    const files = document.createElement("div");
-    files.className = "commit-files hidden";
-    item.appendChild(files);
-    item.querySelector(".commit-head").addEventListener("click", async () => {
-      if (files.classList.contains("hidden")) {
-        files.classList.remove("hidden");
-        if (!files.dataset.loaded) {
-          files.dataset.loaded = "1";
-          let fl;
-          try { fl = await invoke("git_commit_files", { hash: c.hash }); } catch (e) { files.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
-          files.innerHTML = "";
-          for (const f of fl) {
-            const fr = document.createElement("div");
-            fr.className = "commit-file";
-            fr.innerHTML = '<span class="st">' + esc(f.status) + '</span><span>' + esc(f.path) + "</span>";
-            fr.addEventListener("click", async () => {
-              try {
-                const diff = await invoke("git_commit_diff", { hash: c.hash });
-                invoke("open_viewer", { path: f.path, mode: "text", content: diff });
-              } catch (e) { toast(String(e), "err"); }
-            });
-            files.appendChild(fr);
-          }
-        }
-      } else files.classList.add("hidden");
-    });
-    box.appendChild(item);
-  }
+    const dateStr = (date.getMonth() + 1) + "/" + date.getDate();
+    row.innerHTML = rail
+      + '<div class="vsc-commit-body">'
+      +   '<div class="vsc-commit-subj">' + esc(c.subject) + '</div>'
+      +   '<div class="vsc-commit-meta">' + esc(c.author) + ' · ' + dateStr + (c.refs ? ' · ' + esc(c.refs) : "") + '</div>'
+      + '</div>'
+      + '<span class="vsc-cshort">' + esc(c.short) + '</span>';
+    row.onclick = async () => {
+      try {
+        const diff = await invoke("git_commit_diff", { hash: c.hash });
+        invoke("open_viewer", { path: c.short + " " + c.subject, mode: "text", content: diff });
+      } catch (e) { toast(String(e), "err"); }
+    };
+    box.appendChild(row);
+  });
 }
-
 
 function toast(text, cls) {
   const el = $("git-toast");
