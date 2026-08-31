@@ -8,11 +8,17 @@ importers:
 
   .:
     devDependencies:
+      '@ant-design/icons-svg':
+        specifier: ^4.5.0
+        version: 4.5.0
       '@tauri-apps/cli':
         specifier: ^2
         version: 2.11.4
 
 packages:
+
+  '@ant-design/icons-svg@4.5.0':
+    resolution: {integrity: sha512-1BTUFyKPTBZ53MuTP8s0k5SFEXL7o3VHEOwLgzaoWKwnBeqIcqUtVshc4SKzhI6uACfqhJqBwBUE9FsWR3uULA==}
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     resolution: {integrity: sha512-1ryOF3ZhpZ/nemHV5zVwBQBz9jDGKmKPvWPADOhc83ig0P4bMc2iER4NbC6r9sjeIZ6RVQ4g3RZIYvezhcl4TQ==}
@@ -91,6 +97,8 @@ packages:
     hasBin: true
 
 snapshots:
+
+  '@ant-design/icons-svg@4.5.0': {}
 
   '@tauri-apps/cli-darwin-arm64@2.11.4':
     optional: true

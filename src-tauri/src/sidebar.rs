@@ -525,14 +525,36 @@ pub async fn search_workspace(
     app: AppHandle,
     query: String,
     case_sensitive: bool,
+    whole_word: bool,
 ) -> Result<SearchOutcome, String> {
     let root = workspace_root(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let root = root.canonicalize().map_err(|e| e.to_string())?;
-        search_in_dir(&root, &query, case_sensitive)
+        search_in_dir(&root, &query, case_sensitive, whole_word)
     })
     .await
     .map_err(|e| format!("搜索任务失败：{}", e))?
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// whole_word 时检查 needle 在 hay 中是否至少有一处词边界命中。
+fn has_word_boundary_match(hay: &str, needle: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(pos) = hay[offset..].find(needle) {
+        let abs = offset + pos;
+        let before_ok = abs == 0 || !is_word_char(hay[..abs].chars().next_back().unwrap());
+        let after_ok = abs + needle.len() >= hay.len() || !is_word_char(hay[abs + needle.len()..].chars().next().unwrap());
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = abs + 1;
+        while !hay.is_char_boundary(offset.min(hay.len())) { offset += 1; }
+        if offset > hay.len() { break; }
+    }
+    false
 }
 
 /// 路径命中上限（文件名/目录名匹配）。
@@ -540,7 +562,7 @@ const SEARCH_MAX_PATHS: usize = 300;
 
 /// 核心扫描逻辑（供命令与测试共用）：
 /// 路径匹配（文件名/目录名，相对路径子串）+ 内容匹配（逐文件子串）。
-fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<SearchOutcome, String> {
+fn search_in_dir(root: &Path, query: &str, case_sensitive: bool, whole_word: bool) -> Result<SearchOutcome, String> {
     if query.is_empty() {
         return Ok(SearchOutcome { matches: Vec::new(), paths: Vec::new(), truncated: false });
     }
@@ -556,7 +578,7 @@ fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Searc
     for (path, is_dir) in &entries {
         let rel = path.strip_prefix(root).unwrap_or(path).display().to_string();
         let hay = if case_sensitive { rel.clone() } else { rel.to_lowercase() };
-        if hay.contains(&needle) {
+        if hay.contains(&needle) && (!whole_word || has_word_boundary_match(&hay, &needle)) {
             if paths.len() >= SEARCH_MAX_PATHS {
                 path_truncated = true;
                 break;
@@ -602,6 +624,17 @@ fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Searc
         let mut offset = 0usize;
         while let Some(pos) = hay[offset..].find(&needle) {
             let abs = offset + pos;
+            if whole_word {
+                let before_ok = abs == 0 || !is_word_char(hay[..abs].chars().next_back().unwrap());
+                let after_ok = abs + needle.len() >= hay.len() || !is_word_char(hay[abs + needle.len()..].chars().next().unwrap());
+                if !before_ok || !after_ok {
+                    offset = abs + 1;
+                    // 字节边界：跳到下一个 UTF-8 字符边界
+                    while !hay.is_char_boundary(offset.min(hay.len())) { offset += 1; }
+                    if offset >= hay.len() { break; }
+                    continue;
+                }
+            }
             let line_no = hay[..abs].matches(0x0A as char).count() + 1;
             let line_start = hay[..abs].rfind(0x0A as char).map(|i| i + 1).unwrap_or(0);
             let line_end = hay[abs..].find(0x0A as char).map(|i| abs + i).unwrap_or(hay.len());
@@ -625,6 +658,9 @@ fn search_in_dir(root: &Path, query: &str, case_sensitive: bool) -> Result<Searc
 
 #[cfg(test)]
 mod tests {
+    fn search_in_dir_w(root: &Path, q: &str, cs: bool) -> Result<SearchOutcome, String> {
+        search_in_dir(root, q, cs, false)
+    }
     use super::*;
 
     #[test]
@@ -636,7 +672,7 @@ mod tests {
         std::fs::write(dir.join("sub").join("b.md"), "nothing here\nBRIDGE inside\n").unwrap();
 
         // 大小写不敏感：两文件都命中，预览保留原文大小写
-        let out = search_in_dir(&dir, "bridge", false).unwrap();
+        let out = search_in_dir_w(&dir, "bridge", false).unwrap();
         assert_eq!(out.matches.len(), 2, "应命中两处：{:?}", out.matches);
         assert!(out.matches[0].preview.starts_with("Hello Bridge"), "预览应为原文：{}", out.matches[0].preview);
         assert_eq!(out.matches[0].line, 1);
@@ -647,30 +683,59 @@ mod tests {
         assert!(out.paths.is_empty(), "bridge 不在路径中：{:?}", out.paths);
 
         // 大小写敏感：只命中原文大写 BRIDGE
-        let cs = search_in_dir(&dir, "BRIDGE", true).unwrap();
+        let cs = search_in_dir_w(&dir, "BRIDGE", true).unwrap();
         assert_eq!(cs.matches.len(), 1);
         assert_eq!(cs.matches[0].line, 2);
 
         // 文件名搜索：命中 a.txt；目录名搜索：命中 sub/
-        let byname = search_in_dir(&dir, "a.txt", false).unwrap();
+        let byname = search_in_dir_w(&dir, "a.txt", false).unwrap();
         assert_eq!(byname.paths.len(), 1);
         assert_eq!(byname.paths[0].path, "a.txt");
         assert_eq!(byname.paths[0].kind, "file");
-        let bydir = search_in_dir(&dir, "sub", false).unwrap();
+        let bydir = search_in_dir_w(&dir, "sub", false).unwrap();
         assert!(bydir.paths.iter().any(|h| h.path == "sub" && h.kind == "dir"), "{:?}", bydir.paths);
 
         // 空查询
-        let empty = search_in_dir(&dir, "", false).unwrap();
+        let empty = search_in_dir_w(&dir, "", false).unwrap();
         assert!(empty.matches.is_empty() && empty.paths.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
 
     #[test]
+    fn search_whole_word_filters_substrings() {
+        let dir = std::env::temp_dir().join(format!("dsh-word-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "let bridge_x = 1;\nlet bridge = 2;\nlet Bridge = 3;\n").unwrap();
+        std::fs::write(dir.join("data.txt"), "x\n").unwrap();
+
+        // 子串模式：3 处都命中（bridge_x 含 bridge 子串）
+        let sub = search_in_dir(&dir, "bridge", false, false).unwrap();
+        assert_eq!(sub.matches.len(), 3, "{:?}", sub.matches);
+
+        // 整词模式：只命中独立词 bridge / Bridge（大小写不敏感）
+        let ww = search_in_dir(&dir, "bridge", false, true).unwrap();
+        assert_eq!(ww.matches.len(), 2, "{:?}", ww.matches);
+        assert_eq!(ww.matches[0].line, 2);
+        assert_eq!(ww.matches[1].line, 3);
+
+        // 路径整词：a.rs 开头的 a 是整词；data.txt 中的 a 前面是 d，非整词
+        let path_sub = search_in_dir(&dir, "a", false, false).unwrap();
+        assert!(path_sub.paths.iter().any(|p| p.path == "a.rs"));
+        assert!(path_sub.paths.iter().any(|p| p.path == "data.txt"));
+        let path_ww = search_in_dir(&dir, "a", false, true).unwrap();
+        assert!(path_ww.paths.iter().any(|p| p.path == "a.rs"), "{:?}", path_ww.paths);
+        assert!(!path_ww.paths.iter().any(|p| p.path == "data.txt"), "data 中的 a 非整词：{:?}", path_ww.paths);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn search_real_project_finds_bridge() {
         // 真实仓库冒烟：工作区=本仓库源码目录，"sidebar-bridge" 必有命中（插件目录与引用）。
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-        let out = search_in_dir(&root, "sidebar-bridge", false).unwrap();
+        let out = search_in_dir_w(&root, "sidebar-bridge", false).unwrap();
         assert!(!out.matches.is_empty(), "真实仓库应命中 sidebar-bridge");
         assert!(
             out.matches.iter().any(|h| h.file.contains("dsh-sidebar-bridge") || h.file.contains("sidebar.rs") || h.file.contains("main.rs")),

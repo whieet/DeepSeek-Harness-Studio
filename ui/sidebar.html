@@ -44,8 +44,13 @@
   #search-box { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
   #search-input { flex: 1; background: #141518; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 5px 8px; font: inherit; outline: none; }
   #search-input:focus { border-color: var(--acc); }
-  #case-btn, .viewtoggle { border: 1px solid var(--line); background: none; color: var(--dim); border-radius: 6px; width: 30px; font-weight: 700; cursor: pointer; }
-  #case-btn.on, .viewtoggle.active { color: #fff; background: var(--acc); border-color: var(--acc); }
+  #case-btn, #word-btn, .viewtoggle { border: 1px solid var(--line); background: none; color: var(--dim); border-radius: 6px; width: 30px; font-weight: 700; cursor: pointer; flex: none; }
+  #case-btn.on, #word-btn.on, .viewtoggle.active { color: #fff; background: var(--acc); border-color: var(--acc); }
+  svg.anticon { width: 14px; height: 14px; fill: currentColor; vertical-align: -2px; }
+  .tab svg.anticon { width: 16px; height: 16px; }
+  .tw svg.anticon { width: 10px; height: 10px; }
+  .caret svg.anticon { width: 10px; height: 10px; }
+  .path-hit svg.anticon, .filegroup-head svg.anticon, .tree-line svg.anticon { flex: none; }
   .path-hit { display: flex; gap: 6px; align-items: center; padding: 3px 10px; cursor: pointer; }
   .path-hit:hover { background: #ffffff0d; }
   .path-hit .pkind { color: var(--dim); font-size: 11px; }
@@ -89,7 +94,7 @@
   <div id="panel">
     <div id="panel-head">
       <span class="title" id="head-title">工作区</span>
-      <button class="btn" id="head-refresh" title="刷新">⟳</button>
+      <button class="btn" id="head-refresh" title="刷新"></button>
       <button class="btn" id="head-collapse" title="收起面板">»</button>
     </div>
     <div id="panel-body">
@@ -98,8 +103,9 @@
         <div id="search-box">
           <input id="search-input" placeholder="搜索内容 / 文件名 / 目录名…（Enter）" />
           <button id="case-btn" title="区分大小写">Aa</button>
-          <button id="view-list-btn" class="viewtoggle active" title="列表视图">☰</button>
-          <button id="view-tree-btn" class="viewtoggle" title="树视图">🌳</button>
+          <button id="word-btn" title="全字匹配">Wb</button>
+          <button id="view-list-btn" class="viewtoggle active" title="列表视图"></button>
+          <button id="view-tree-btn" class="viewtoggle" title="树视图"></button>
         </div>
         <div id="search-results"><div class="msg">输入关键词开始搜索</div></div>
       </div>
@@ -108,12 +114,13 @@
   </div>
   <div id="dragbar" title="拖拽调整宽度"></div>
   <div id="bar">
-    <button class="tab active" id="tab-files" title="文件">▣</button>
-    <button class="tab" id="tab-search" title="搜索">🔍</button>
-    <button class="tab" id="tab-git" title="Git">⑂<span class="badge hidden" id="git-badge"></span></button>
+    <button class="tab active" id="tab-files" title="文件"></button>
+    <button class="tab" id="tab-search" title="搜索"></button>
+    <button class="tab" id="tab-git" title="Git"><span id="tab-git-icon"></span><span class="badge hidden" id="git-badge"></span></button>
     <div style="flex:1"></div>
     <button class="tab" id="bar-collapse" title="收起面板">»</button>
   </div>
+<script src="./icons.gen.js"></script>
 <script>
 const invoke = (cmd, args) => window.__TAURI__.core.invoke(cmd, args);
 const $ = (id) => document.getElementById(id);
@@ -129,6 +136,18 @@ let ctxMenu = null;
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+// 渲染 DSH_ICONS（@ant-design/icons-svg 抽象树）为 SVG HTML。
+function icon(name, cls) {
+  const def = window.DSH_ICONS && window.DSH_ICONS[name];
+  if (!def) return "";
+  const { tag, attrs, children } = def.icon;
+  const attrStr = Object.entries({ ...attrs, class: "anticon" + (cls ? " " + cls : "") })
+    .map(([k, v]) => k + '="' + String(v).replace(/"/g, "&quot;") + '"').join(" ");
+  const kids = (children || []).map((c) =>
+    "<" + c.tag + Object.entries(c.attrs || {}).map(([k, v]) => " " + k + '="' + String(v).replace(/"/g, "&quot;") + '"').join("") + (c.children ? ">" + c.children.map((g) => "<" + g.tag + Object.entries(g.attrs || {}).map(([k, v]) => " " + k + '="' + String(v) + '"').join("") + "></" + g.tag + ">").join("") + "</" + c.tag + ">" : "></" + c.tag + ">")
+  ).join("");
+  return "<svg " + attrStr + " aria-hidden=\"true\">" + kids + "</svg>";
 }
 
 async function loadWorkspace() {
@@ -205,7 +224,7 @@ function renderTree() {
   host.innerHTML = "";
   const rootRow = document.createElement("div");
   rootRow.className = "row indent0";
-  rootRow.innerHTML = '<span class="icon">📁</span><span class="name"><b>' + esc(wsInfo.name) + "</b></span>";
+  rootRow.innerHTML = '<span class="icon">' + icon("FolderOpenOutlined") + '</span><span class="name"><b>' + esc(wsInfo.name) + "</b></span>";
   host.appendChild(rootRow);
   const tree = document.createElement("div");
   tree.id = "tree-root";
@@ -240,9 +259,9 @@ function renderDirInto(container, dirPath) {
     row.className = "row indent" + d;
     const mark = item.kind === "file" ? gitMarkFor(item.path) : "";
     const markHtml = mark ? '<span class="gitmark ' + esc(mark) + '">' + esc(mark) + "</span>" : "";
-    const caret = item.kind === "dir" ? '<span class="caret">' + (treeState.get(item.path)?.open ? "▾" : "▸") + "</span>" : '<span class="caret"></span>';
-    const icon = item.kind === "dir" ? "📁" : "📄";
-    row.innerHTML = caret + '<span class="icon">' + icon + '</span><span class="name">' + esc(item.name) + "</span>" + markHtml;
+    const caret = item.kind === "dir" ? '<span class="caret">' + (treeState.get(item.path)?.open ? icon("CaretDownOutlined") : icon("CaretRightOutlined")) + "</span>" : '<span class="caret"></span>';
+    const fileIcon = item.kind === "dir" ? icon("FolderOutlined") : icon("FileOutlined");
+    row.innerHTML = caret + '<span class="icon">' + fileIcon + '</span><span class="name">' + esc(item.name) + "</span>" + markHtml;
     row.dataset.path = item.path;
     row.dataset.kind = item.kind;
     row.dataset.name = item.name;
@@ -349,9 +368,14 @@ async function openViewer(opts) {
 
 // ── 搜索面板 ──
 let caseSensitive = false;
+let wholeWord = false;
 $("case-btn").onclick = () => {
   caseSensitive = !caseSensitive;
   $("case-btn").classList.toggle("on", caseSensitive);
+};
+$("word-btn").onclick = () => {
+  wholeWord = !wholeWord;
+  $("word-btn").classList.toggle("on", wholeWord);
 };
 $("search-input").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") runSearch();
@@ -367,7 +391,7 @@ async function runSearch() {
   host.innerHTML = '<div class="msg">搜索中…</div>';
   try {
     const t0 = performance.now();
-    const out = await invoke("search_workspace", { query: q, caseSensitive });
+    const out = await invoke("search_workspace", { query: q, caseSensitive, wholeWord });
     searchOut = out; searchQuery = q;
     renderSearch(performance.now() - t0);
   } catch (e) {
@@ -423,14 +447,14 @@ function renderUnifiedList(host, sorted) {
     if (info.kind === "dir") {
       const row = document.createElement("div");
       row.className = "path-hit";
-      row.innerHTML = '📁 <span>' + highlight(path, searchQuery, caseSensitive) + '</span> <span class="pkind">目录</span>';
+      row.innerHTML = icon("FolderOutlined") + ' <span>' + highlight(path, searchQuery, caseSensitive) + '</span> <span class="pkind">目录</span>';
       row.addEventListener("click", () => { switchTab("files"); expandTo(path); });
       host.appendChild(row);
       continue;
     }
     const gh = document.createElement("div");
     gh.className = "filegroup-head";
-    gh.innerHTML = '📄 ' + highlight(path, searchQuery, caseSensitive) + (info.hits.length ? ' <span style="color:var(--dim)">(' + info.hits.length + ")</span>" : "");
+    gh.innerHTML = icon("FileOutlined") + ' ' + highlight(path, searchQuery, caseSensitive) + (info.hits.length ? ' <span style="color:var(--dim)">(' + info.hits.length + ")</span>" : "");
     host.appendChild(gh);
     for (const m of info.hits) appendMatchRow(host, path, m, 22);
   }
@@ -457,13 +481,13 @@ function renderUnifiedTree(host, sorted) {
       const full = prefix + name;
       const line = document.createElement("div");
       line.className = "tree-line";
-      line.style.paddingLeft = 10 + depth * 14 + "px";
-      line.innerHTML = '<span class="tw">▾</span>📁 <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (count ? '<span class="cnt">(' + count + ")</span>" : "");
+      line.style.paddingLeft = 8 + depth * 18 + "px";
+      line.innerHTML = '<span class="tw">' + icon("CaretDownOutlined") + '</span>' + icon("FolderOutlined") + ' <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (count ? '<span class="cnt">(' + count + ")</span>" : "");
       const box = document.createElement("div");
       line.addEventListener("click", () => {
         const open = box.style.display !== "none";
         box.style.display = open ? "none" : "";
-        line.querySelector(".tw").textContent = open ? "▸" : "▾";
+        line.querySelector(".tw").innerHTML = open ? icon("CaretDownOutlined") : icon("CaretRightOutlined");
       });
       host.appendChild(line);
       host.appendChild(box);
@@ -473,8 +497,8 @@ function renderUnifiedTree(host, sorted) {
       const rel = prefix + name;
       const fl = document.createElement("div");
       fl.className = "tree-line";
-      fl.style.paddingLeft = 10 + depth * 14 + "px";
-      fl.innerHTML = '📄 <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (info.hits.length ? '<span class="cnt">(' + info.hits.length + ")</span>" : "");
+      fl.style.paddingLeft = 8 + depth * 18 + "px";
+      fl.innerHTML = '<span class="tw"></span>' + icon("FileOutlined") + ' <span>' + highlight(name, searchQuery, caseSensitive) + '</span>' + (info.hits.length ? '<span class="cnt">(' + info.hits.length + ")</span>" : "");
       fl.addEventListener("click", () => openPath(rel, info.hits[0] ? info.hits[0].line : 0));
       host.appendChild(fl);
       for (const m of info.hits) {
@@ -524,9 +548,9 @@ $("view-tree-btn").onclick = () => { searchView = "tree"; $("view-tree-btn").cla
 function highlight(text, q, cs) {
   const t = esc(text);
   const needle = esc(q);
-  if (cs) return t.split(needle).join('<span class="mark">' + needle + "</span>");
-  // 大小写不敏感高亮：逐字符正则转义
-  const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  const escRe = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const flags = cs ? "g" : "gi";
+  const re = new RegExp(wholeWord ? "(?<![#\\w])" + escRe + "(?![#\\w])" : escRe, flags);
   return t.replace(re, (m) => '<span class="mark">' + m + "</span>");
 }
 
@@ -552,7 +576,7 @@ async function renderGit() {
   host.innerHTML = "";
   const head = document.createElement("div");
   head.className = "section-head";
-  head.innerHTML = "⑂ " + esc(st.branch) +
+  head.innerHTML = icon("BranchesOutlined") + " " + esc(st.branch) +
     (st.ahead || st.behind ? " <span style=\"color:var(--dim)\">↑" + st.ahead + " ↓" + st.behind + "</span>" : "");
   host.appendChild(head);
   const sec = (title, files, ops) => {
@@ -719,6 +743,14 @@ document.addEventListener("keydown", (ev) => {
     ev.preventDefault();
   }
 });
+
+// ── 静态图标 ──
+$("tab-files").innerHTML = icon("BarsOutlined");
+$("tab-search").innerHTML = icon("SearchOutlined");
+$("tab-git-icon").innerHTML = icon("BranchesOutlined");
+$("head-refresh").innerHTML = icon("ReloadOutlined");
+$("view-list-btn").innerHTML = icon("BarsOutlined");
+$("view-tree-btn").innerHTML = icon("ApartmentOutlined");
 
 // ── 启动 ──
 listen("dsh-sidebar-workspace", () => loadWorkspace());
