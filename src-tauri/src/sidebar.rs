@@ -1310,6 +1310,7 @@ pub fn open_viewer(
     path: String,
     line: usize,
     mode: String,
+    hash: Option<String>,
 ) -> Result<(), String> {
     let mut q = format!("mode={}", percent_encode(&mode));
     if !path.is_empty() {
@@ -1317,6 +1318,9 @@ pub fn open_viewer(
     }
     if line > 0 {
         q.push_str(&format!("&line={}", line));
+    }
+    if let Some(h) = hash.as_deref().filter(|h| !h.is_empty()) {
+        q.push_str(&format!("&hash={}", percent_encode(h)));
     }
     let script = format!("location.replace('viewer.html?{}')", q);
     if let Some(existing) = app.get_webview_window("viewer") {

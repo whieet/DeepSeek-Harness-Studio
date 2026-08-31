@@ -48,6 +48,14 @@ async function load() {
   document.title = (path.split("/").pop() || "查看") + " — DeepSeek Harness";
   const host = $("content");
   try {
+    if (mode === "commit-diff") {
+      const hash = params.get("hash") || "";
+      const diff = await invoke("git_commit_diff", { hash });
+      $("file-path").textContent = "提交 " + hash.slice(0, 10);
+      document.title = "提交 " + hash.slice(0, 10) + " — DeepSeek Harness";
+      renderDiff(diff, host);
+      return;
+    }
     if (mode === "diff" || mode === "diff-staged") {
       const diff = await invoke("git_diff_file", { path, staged: mode === "diff-staged" });
       renderDiff(diff, host);

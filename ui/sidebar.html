@@ -976,8 +976,7 @@ async function buildGraph(host) {
       + '<span class="vsc-cshort">' + esc(c.short) + '</span>';
     row.onclick = async () => {
       try {
-        const diff = await invoke("git_commit_diff", { hash: c.hash });
-        invoke("open_viewer", { path: c.short + " " + c.subject, mode: "text", content: diff });
+        await invoke("open_viewer", { path: c.subject, mode: "commit-diff", hash: c.hash });
       } catch (e) { toast(String(e), "err"); }
     };
     box.appendChild(row);
