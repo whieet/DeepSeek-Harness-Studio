@@ -509,6 +509,7 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
 
     // 左：内核 Web UI（外部页面，零 IPC；外链经系统浏览器打开）
     let kernel = tauri::webview::WebviewBuilder::new("kernel", tauri::WebviewUrl::External(parsed))
+        .background_color(tauri::window::Color(30, 30, 30, 255))
         .on_navigation(move |nav| {
             let allowed =
                 nav.scheme() == "http" && nav.host_str() == Some("127.0.0.1") && nav.port() == Some(port);
@@ -527,7 +528,8 @@ pub fn open_main_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     // 右：工作区侧边栏（本地页面，含竖向图标条）
-    let sidebar = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()));
+    let sidebar = tauri::webview::WebviewBuilder::new("sidebar", tauri::WebviewUrl::App("sidebar.html".into()))
+        .background_color(tauri::window::Color(30, 31, 34, 255));
     window
         .add_child(
             sidebar,
