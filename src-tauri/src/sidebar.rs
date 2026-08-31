@@ -1280,28 +1280,27 @@ pub fn git_merge(app: AppHandle, branch: String) -> Result<(), String> {
 
 // ── 侧栏窗口控制与工作区事件 ─────────────────────────────────────────────────
 
-/// 调整侧栏面板宽度并重排布局。
+/// 调整侧栏面板宽度（持久化偏好；布局由前端 CSS 完成）。
 #[tauri::command]
-pub fn set_sidebar_width(app: AppHandle, width: f64) -> Result<(), String> {
+pub fn set_sidebar_width(width: f64) -> Result<(), String> {
     let width = width.clamp(260.0, 600.0);
     SIDEBAR_PANEL_W.store(width.to_bits(), Ordering::SeqCst);
-    relayout(&app);
     Ok(())
 }
 
-/// 折叠/展开侧栏面板（竖向图标条常驻）。
+/// 折叠/展开侧栏面板（竖向图标条常驻；布局由前端 CSS 完成）。
 #[tauri::command]
 pub fn toggle_sidebar(app: AppHandle) -> Result<bool, String> {
     let next = !SIDEBAR_HIDDEN.load(Ordering::SeqCst);
     SIDEBAR_HIDDEN.store(next, Ordering::SeqCst);
-    relayout(&app);
+    let _ = app.emit("dsh-sidebar-toggled", next);
     Ok(next)
 }
 
-fn relayout(app: &AppHandle) {
-    if let Some(window) = app.get_window("main") {
-        server::layout_main_window(&window);
-    }
+/// 内核页 URL（供 iframe 加载）。
+#[tauri::command]
+pub fn get_kernel_url() -> Result<String, String> {
+    crate::server::kernel_url().ok_or_else(|| String::from("内核地址尚未就绪"))
 }
 
 /// 工作区变更：通知侧栏刷新（supervisor 线程调用）。

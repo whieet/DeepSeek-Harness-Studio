@@ -83,6 +83,7 @@ fn main() {
 
             sidebar::set_sidebar_width,
             sidebar::toggle_sidebar,
+            sidebar::get_kernel_url,
             sidebar::open_viewer
         ])
         .on_menu_event(menu::handle_menu_event)
@@ -96,11 +97,7 @@ fn main() {
                     let _ = state.tx.send(SuperCommand::Shutdown);
                 }
             }
-            if let WindowEvent::Resized { .. } = event {
-                if window.label() == "main" {
-                    server::layout_main_window(window);
-                }
-            }
+            // 布局由前端 CSS 自适应（单 webview + iframe 架构），无需 resize 重排
         })
         .setup(|app| {
             let handle = app.handle().clone();

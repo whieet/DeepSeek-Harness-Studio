@@ -7,12 +7,14 @@
   :root { color-scheme: dark; --bg:#1e1f22; --bg2:#252629; --line:#333438; --fg:#d4d4d4; --dim:#8b8f98; --acc:#2e7cf6; --add:#6ecf97; --mod:#e2c08d; --del:#e07a7a; --un:#a6c98a; }
   * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
   html, body { height: 100%; background: transparent; }
-  body { display: flex; overflow: hidden; font: 12px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); overflow: hidden; }
-  /* 面板内容区（左） + 拖拽条 + Activity Bar（右，贴窗口缘） */
-  #panel { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
-  #dragbar { flex: 0 0 5px; cursor: col-resize; background: var(--bg); border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+  body { overflow: hidden; font: 12px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; color: var(--fg); user-select: none; }
+  #kernel-frame { position: fixed; inset: 0; width: 100%; height: 100%; border: none; background: #1e1e1e; z-index: 0; }
+  #panel { position: fixed; top: 0; bottom: 0; right: 44px; width: 300px; display: flex; flex-direction: column; background: var(--bg); z-index: 2; transition: transform 160ms ease; }
+  #dragbar { position: fixed; top: 0; bottom: 0; right: 44px; width: 5px; margin-right: 300px; cursor: col-resize; background: var(--bg); border-left: 1px solid var(--line); border-right: 1px solid var(--line); z-index: 3; transition: transform 160ms ease, opacity 160ms ease; }
   #dragbar:hover { background: var(--acc); opacity: .4; }
-  #bar { flex: 0 0 44px; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 2px; }
+  body.sb-hidden #panel { transform: translateX(calc(100% + 44px)); }
+  body.sb-hidden #dragbar { transform: translateX(100vw); opacity: 0; }
+  #bar { position: fixed; top: 0; bottom: 0; right: 0; width: 44px; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; z-index: 4; }
   .tab { width: 36px; height: 36px; border: none; background: none; color: var(--dim); font-size: 17px; border-radius: 6px; cursor: pointer; position: relative; }
   .tab:hover { color: var(--fg); }
   .tab.active { color: #fff; background: none; }
@@ -187,6 +189,7 @@
 </style>
 </head>
 <body>
+  <iframe id="kernel-frame" title="DeepSeek"></iframe>
   <div id="dragbar" title="拖拽调整宽度"></div>
 <div id="panel">
     <div id="panel-head">
@@ -1036,6 +1039,13 @@ async function act(cmd, paths) {
   }
 }
 
+// 恢复面板宽度偏好
+(function () {
+  const w = Number(localStorage.getItem("sb-panel-w") || 300);
+  $("panel").style.width = w + "px";
+  $("dragbar").style.marginRight = w + "px";
+})();
+
 // ── Tab 切换 / 刷新 / 折叠 ──
 const VIEWS = { files: "view-files", search: "view-search", git: "view-git" };
 const TITLES = { files: null, search: "搜索", git: "Git" };
@@ -1070,93 +1080,69 @@ $("head-refresh").onclick = async () => {
   else if (activeTab === "git") { await refreshAll(); }
   else if (activeTab === "search") await runSearch();
 };
-// ── 折叠/展开动画编排（全部为 webview 内 CSS transform，GPU 合成零重排；Rust 平移发生在内容不可见时刻）──
-const COLLAPSE_MS = 130;
-function barShift(px, animate) {
-  const bar = $("bar");
-  bar.style.transition = animate ? "transform " + COLLAPSE_MS + "ms ease" : "none";
-  bar.style.transform = px === 0 ? "" : "translateX(" + px + "px)";
+// ── 折叠/展开：纯 DOM 宽度动画（iframe + 悬浮面板），无 webview bounds 操作 ──
+function layoutCollapsed(hidden) {
+  document.body.classList.toggle("sb-hidden", hidden);
+  if (!hidden) {
+    const w = Number(localStorage.getItem("sb-panel-w") || 300);
+    $("panel").style.width = w + "px";
+    $("dragbar").style.marginRight = w + "px";
+  }
 }
-function panelShift(px, animate) {
-  const panel = $("panel");
-  panel.style.transition = animate ? "transform " + COLLAPSE_MS + "ms ease" : "none";
-  panel.style.transform = px === 0 ? "" : "translateX(" + px + "px)";
-}
-function doCollapse() {
+async function doCollapse() {
   if (collapsing) return;
   collapsing = true;
-  if (!panelCollapsed) {
-    // 折叠：面板与拖拽条滑向右侧图标条下方（transform 动画，无重排）
-    const w = document.getElementById("panel").offsetWidth;
-    panelShift(w, true);
-    $("dragbar").style.visibility = "hidden";
-    barShift(-w, true);
-    setTimeout(async () => {
-      $("bar").style.visibility = "hidden";
-      barShift(0, false);          // 图标条在不可见时归位到 webview 原点
-      try {
-        const hidden = await invoke("toggle_sidebar");   // Rust 平移 webview 出屏，只留 44px
-        applyCollapse(hidden);
-        $("bar").style.visibility = "";
-      } catch (e) { alert(String(e)); }
-      collapsing = false;
-    }, COLLAPSE_MS + 20);
-  } else {
-    // 展开：先在不可见状态下把图标条预置到 webview 内 x=panel_w 处，再触发 Rust 平移回屏——
-    // 平移完成后图标条屏幕位置与折叠时一致（无跳变），随后播放滑入动画
-    barShift($("panel").offsetWidth || 300, false);
-    (async () => {
-      try {
-        const hidden = await invoke("toggle_sidebar");
-        applyCollapse(hidden);
-        // 双 rAF 确保 bounds 平移已合成，然后滑入
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-          $("bar").style.visibility = "";
-          $("panel").style.visibility = "";
-          barShift(0, true);
-          panelShift(0, true);
-          setTimeout(() => { collapsing = false; barShift(0, false); panelShift(0, false); }, COLLAPSE_MS + 20);
-        }));
-      } catch (e) { applyCollapse(true); alert(String(e)); collapsing = false; }
-    })();
-  }
-}
-function applyCollapse(hidden) {
-  panelCollapsed = hidden;
-  $("panel").classList.toggle("collapsed", hidden);
-  $("dragbar").style.display = hidden ? "none" : "";
-  const glyph = hidden ? "«" : "»";
-  $("bar-collapse").textContent = glyph;
-  $("head-collapse").textContent = glyph;
-  if (hidden) {
-    $("panel").style.visibility = "hidden";
-  } else {
-    // 展开由动画流程恢复可见；此处仅兜底（非动画路径）
-    if (!collapsing) $("panel").style.visibility = "";
-  }
+  try {
+    const hidden = await invoke("toggle_sidebar");
+    panelCollapsed = hidden;
+    layoutCollapsed(hidden);
+  } catch (e) { alert(String(e)); }
+  collapsing = false;
 }
 $("bar-collapse").onclick = doCollapse;
 $("head-collapse").onclick = doCollapse;
+// ⌘B 菜单（Rust 菜单事件）折叠时同步 UI
+listen("dsh-sidebar-toggled", (ev) => {
+  panelCollapsed = !!ev.payload;
+  layoutCollapsed(panelCollapsed);
+});
 
-// 拖拽调宽：dragbar 在面板与竖条之间，clientX 即目标面板宽
+// 拖拽调宽：右缘固定 44px 图标条，clientX 即目标面板宽；实时改 DOM，松手持久化
 $("dragbar").addEventListener("mousedown", (ev) => {
   ev.preventDefault();
-  const move = (e) => invoke("set_sidebar_width", { width: document.body.clientWidth - 44 - e.clientX });
+  const move = (e) => {
+    const w = Math.min(600, Math.max(260, document.body.clientWidth - 44 - e.clientX));
+    $("panel").style.width = w + "px";
+    $("dragbar").style.marginRight = w + "px";
+  };
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
+    const w = parseInt($("panel").style.width, 10) || 300;
+    localStorage.setItem("sb-panel-w", String(w));
+    invoke("set_sidebar_width", { width: w });
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 });
 
-// 宽度自适应折叠态（⌘B 菜单/其他入口触发布局变化时同步 UI）
-new ResizeObserver(() => {
-  const collapsed = document.body.clientWidth <= 60;
-  if (collapsed !== panelCollapsed) applyCollapse(collapsed);
-}).observe(document.body);
+// ⌘B 菜单折叠路径：菜单事件直接改 Rust 状态，前端轮询一次同步（无外部 bounds 变化，无需 ResizeObserver）
 
 window.addEventListener("focus", () => { if (!panelCollapsed) refreshAll(); });
+
+// 内核页 iframe：获取地址后加载；内核重启换端口时由 __setKernelUrl 更新
+(async () => {
+  try {
+    const u = await invoke("get_kernel_url");
+    $("kernel-frame").src = u;
+  } catch (e) { /* 内核未就绪：稍后 workspace 事件触发重试 */ }
+  window.__setKernelUrl = (u) => { $("kernel-frame").src = u; };
+})();
+listen("dsh-sidebar-workspace", async () => {
+  if (!$("kernel-frame").src) {
+    try { $("kernel-frame").src = await invoke("get_kernel_url"); } catch (e) {}
+  }
+});
 
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") { closeCtx(); return; }
