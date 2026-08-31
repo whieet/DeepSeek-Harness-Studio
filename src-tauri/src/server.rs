@@ -474,16 +474,28 @@ pub fn layout_main_window(window: &tauri::Window) {
     let total = size.width as i32;
     let height = size.height as i32;
     let kernel_w = (total - bar_w - panel_w).max(1);
-    // 折叠时 sidebar webview 宽度不变（恒 panel_w+bar_w），仅整体右移出屏、只留图标条：
-    // WKWebView 平移不触发内容重排，从根上消除折叠/展开时面板内容被挤压重排的残影闪烁。
-    // 先动上层 sidebar，再动 kernel，边界过渡全程被覆盖、无缝隙。
+    // 折叠/展开时 sidebar webview 宽度不变（恒 panel_w+bar_w），仅整体平移：
+    // WKWebView 平移不触发内容重排，消除面板内容挤压重排的残影。
+    // 顺序按"谁先动露出区域就被谁覆盖"原则：
+    //   收起：sidebar 先滑出屏（上层先动），kernel 后扩大——右缘过渡全程被 sidebar 覆盖；
+    //   展开：kernel 先收缩（露出的是窗口深色底、非白色），sidebar 后滑回覆盖——
+    //        若 sidebar 先滑回，其屏幕外裁剪区域恢复需要一帧渲染，会先闪白。
     let full_w = (bar_w + panel_w) as f64 / scale;
     let sidebar_x = if hidden { (total - bar_w) as f64 / scale } else { (kernel_w as f64) / scale };
-    if let Some(wv) = window.get_webview("sidebar") {
-        let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(sidebar_x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(full_w, height as f64 / scale)) });
-    }
-    if let Some(wv) = window.get_webview("kernel") {
-        let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+    if hidden {
+        if let Some(wv) = window.get_webview("sidebar") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(sidebar_x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(full_w, height as f64 / scale)) });
+        }
+        if let Some(wv) = window.get_webview("kernel") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+        }
+    } else {
+        if let Some(wv) = window.get_webview("kernel") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(0.0, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(kernel_w as f64 / scale, height as f64 / scale)) });
+        }
+        if let Some(wv) = window.get_webview("sidebar") {
+            let _ = wv.set_bounds(tauri::Rect { position: tauri::Position::Logical(tauri::LogicalPosition::new(sidebar_x, 0.0)), size: tauri::Size::Logical(tauri::LogicalSize::new(full_w, height as f64 / scale)) });
+        }
     }
 }
 
