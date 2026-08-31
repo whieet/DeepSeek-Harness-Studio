@@ -1165,6 +1165,114 @@ pub fn git_revert(app: AppHandle, hash: String) -> Result<(), String> {
     git(&root, &["revert", "--no-edit", &hash]).map(|_| ())
 }
 
+/// 抓取远程更新（不改工作区）。
+#[tauri::command]
+pub fn git_fetch(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
+    git(&root, &["fetch", "--all", "--prune"]).map(|_| ())
+}
+
+/// 贮藏列表。
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    pub index: usize,
+    pub message: String,
+    pub time: i64,
+}
+
+#[tauri::command]
+pub fn git_stash_list(app: AppHandle) -> Result<Vec<StashEntry>, String> {
+    let root = workspace_root(&app)?;
+    if !root.join(".git").exists() {
+        return Err(String::from("当前目录不是 git 仓库"));
+    }
+    let raw = git(&root, &["stash", "list", "--format=%gd%x00%at%x00%gs"])?;
+    let mut out = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        let mut parts = line.split(' ');
+        let _ref = parts.next().unwrap_or("");
+        let time = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        let message = parts.next().unwrap_or("").trim().to_string();
+        out.push(StashEntry { index: i, message, time });
+    }
+    Ok(out)
+}
+
+/// 贮藏当前更改（含未跟踪）。
+#[tauri::command]
+pub fn git_stash_push(app: AppHandle, message: Option<String>) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let has_changes = !git(&root, &["status", "--porcelain"])?.trim().is_empty();
+    if !has_changes {
+        return Err(String::from("没有可贮藏的更改"));
+    }
+    match message.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => git(&root, &["stash", "push", "-u", "-m", m]).map(|_| ()),
+        None => git(&root, &["stash", "push", "-u"]).map(|_| ()),
+    }
+}
+
+/// 恢复最近一条贮藏（可能有冲突，错误原样返回）。
+#[tauri::command]
+pub fn git_stash_pop(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    git(&root, &["stash", "pop"]).map(|_| ())
+}
+
+/// 修正上次提交：把当前暂存并入，沿用/替换提交信息。
+#[tauri::command]
+pub fn git_commit_amend(app: AppHandle, message: Option<String>) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let has_head = git(&root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
+    if !has_head {
+        return Err(String::from("还没有可修正的提交"));
+    }
+    let msg = message.as_deref().map(str::trim).filter(|m| !m.is_empty());
+    match msg {
+        Some(m) => git(&root, &["commit", "--amend", "-m", m]).map(|_| ()),
+        None => git(&root, &["commit", "--amend", "--no-edit"]).map(|_| ()),
+    }
+}
+
+/// 撤销上次提交（更改保留在暂存区，soft reset）。
+#[tauri::command]
+pub fn git_undo_commit(app: AppHandle) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let has_head = git(&root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
+    if !has_head {
+        return Err(String::from("还没有可撤销的提交"));
+    }
+    git(&root, &["reset", "--soft", "HEAD~1"]).map(|_| ())
+}
+
+/// 删除分支（-d 安全删除；force 时 -D）。
+#[tauri::command]
+pub fn git_branch_delete(app: AppHandle, branch: String, force: bool) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err(String::from("分支名不能为空"));
+    }
+    let mut args = vec!["branch", if force { "-D" } else { "-d" }];
+    args.push(branch);
+    git(&root, &args).map(|_| ())
+}
+
+/// 合并指定分支到当前分支。
+#[tauri::command]
+pub fn git_merge(app: AppHandle, branch: String) -> Result<(), String> {
+    let root = workspace_root(&app)?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Err(String::from("分支名不能为空"));
+    }
+    git(&root, &["merge", branch]).map(|_| ())
+}
+
 // ── 侧栏窗口控制与工作区事件 ─────────────────────────────────────────────────
 
 /// 调整侧栏面板宽度并重排布局。

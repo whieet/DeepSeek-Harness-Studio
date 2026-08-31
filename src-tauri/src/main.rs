@@ -72,6 +72,15 @@ fn main() {
             sidebar::git_commit_files,
             sidebar::git_commit_diff,
             sidebar::git_revert,
+            sidebar::git_fetch,
+            sidebar::git_stash_list,
+            sidebar::git_stash_push,
+            sidebar::git_stash_pop,
+            sidebar::git_commit_amend,
+            sidebar::git_undo_commit,
+            sidebar::git_branch_delete,
+            sidebar::git_merge,
+
             sidebar::set_sidebar_width,
             sidebar::toggle_sidebar,
             sidebar::open_viewer

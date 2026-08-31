@@ -135,6 +135,12 @@
   .vsc-branch-item .vsc-bi-sub { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-left: 21px; }
   .vsc-branch-item:hover .vsc-bi-time, .vsc-branch-item:hover .vsc-bi-sub, .vsc-branch-item:hover .vsc-menu-up { color: #e8e8e8; }
   .vsc-menu-rtag { float: right; font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--dim); }
+  .vsc-bi-ops { margin-left: auto; display: none; gap: 4px; }
+  .vsc-branch-item:hover .vsc-bi-ops { display: inline-flex; }
+  .vsc-branch-item:hover .vsc-bi-time { display: none; }
+  .vsc-bi-op { font-size: 11px; padding: 1px 8px; border-radius: 4px; background: #ffffff14; cursor: pointer; }
+  .vsc-bi-op:hover { background: var(--acc); color: #fff; }
+  .vsc-bi-op.danger:hover { background: #c74e39; }
   .vsc-checkout { padding: 6px 10px; border-bottom: 1px solid var(--line); }
   .vsc-checkout input { width: 100%; background: #141518; border: 1px solid var(--acc); color: var(--fg); border-radius: 4px; padding: 5px 8px; font: inherit; outline: none; box-sizing: border-box; }
   .vsc-checkout-hint { color: var(--dim); font-size: 10px; margin-top: 3px; }
@@ -678,25 +684,74 @@ async function renderGit() {
     : "";
   topbar.innerHTML =
     '<div class="vsc-branch" id="vsc-branch">' + icon("BranchesOutlined") + '<span>' + esc(st.branch) + '</span>' + icon("CaretDownOutlined") + '</div>'
-    + '<div class="vsc-actions">' + syncPart + '<span class="vsc-ico" id="vsc-refresh" title="刷新">' + icon("ReloadOutlined") + '</span></div>'
+    + '<div class="vsc-actions">' + syncPart
+    + '<span class="vsc-ico" id="vsc-fetch" title="抓取远程更新">' + icon("CloudOutlined") + '</span>'
+    + '<span class="vsc-ico" id="vsc-more" title="更多 Git 操作">' + icon("EllipsisOutlined") + '</span>'
+    + '<span class="vsc-ico" id="vsc-refresh" title="刷新">' + icon("ReloadOutlined") + '</span>'
+    + '</div>'
+    + '<div id="vsc-more-menu" class="vsc-menu hidden"></div>'
     + '<div id="vsc-branch-menu" class="vsc-menu hidden"></div>'
     + '<div id="vsc-checkout-box" class="vsc-checkout hidden"><input id="vsc-checkout-input" placeholder="分支名（回车创建并切换）" /><div class="vsc-checkout-hint">Esc 取消</div></div>'
   ;
   host.appendChild(topbar);
   $("vsc-refresh").onclick = () => renderGit();
+  $("vsc-fetch").onclick = async () => {
+    try { await invoke("git_fetch"); toast("已抓取远程更新", "ok"); await renderGit(); } catch (e) { toast(String(e), "err"); }
+  };
+  $("vsc-more").onclick = async (ev) => {
+    ev.stopPropagation();
+    const menu = $("vsc-more-menu");
+    if (!menu.classList.contains("hidden")) { menu.classList.add("hidden"); return; }
+    const run = async (label, cmd, args, okMsg) => {
+      menu.classList.add("hidden");
+      try { await invoke(cmd, args || {}); if (okMsg) toast(okMsg, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+    };
+    const item = (label, fn) => {
+      const el = document.createElement("div");
+      el.className = "vsc-menu-item";
+      el.textContent = label;
+      el.onclick = fn;
+      return el;
+    };
+    menu.innerHTML = "";
+    menu.appendChild(item("拉取", () => run("拉取", "git_pull", null, "已拉取")));
+    menu.appendChild(item("推送", () => run("推送", "git_push", null, "已推送")));
+    menu.appendChild(item("抓取", () => run("抓取", "git_fetch", null, "已抓取")));
+    menu.appendChild(item("贮藏更改（含未跟踪）", () => run("贮藏", "git_stash_push", null, "已贮藏更改")));
+    menu.appendChild(item("恢复最近贮藏", () => run("恢复贮藏", "git_stash_pop", null, "已恢复贮藏")));
+    menu.appendChild(item("修正上次提交（并入暂存，保留信息）", async () => {
+      menu.classList.add("hidden");
+      const cur = prompt("修正提交信息（留空沿用原信息）：", "");
+      if (cur === null) return;
+      try { await invoke("git_commit_amend", { message: cur || null }); toast("已修正提交", "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+    }));
+    menu.appendChild(item("撤销上次提交（更改保留）", async () => {
+      menu.classList.add("hidden");
+      if (!confirm("撤销上次提交？更改会保留在暂存区。")) return;
+      try { await invoke("git_undo_commit"); toast("已撤销上次提交", "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+    }));
+    menu.classList.remove("hidden");
+    const close = (e2) => { if (!menu.contains(e2.target) && !e2.target.closest("#vsc-more")) { menu.classList.add("hidden"); document.removeEventListener("click", close); } };
+    setTimeout(() => document.addEventListener("click", close), 0);
+  };
   $("vsc-branch").onclick = (ev) => { ev.stopPropagation(); toggleBranchMenu(st.branch); };
 
   // ── 提交框（置顶，VSCode 位置）──
   const box = document.createElement("div");
   box.className = "vsc-commit";
   box.innerHTML =
-    '<textarea id="commit-msg" rows="2" placeholder="消息 (⌘Enter 提交，空提交 ⌘⇧Enter)"></textarea>'
-    + '<button id="commit-btn" title="提交"' + (st.staged.length ? "" : " disabled") + '>' + icon("CheckOutlined") + '</button>'
+    '<textarea id="commit-msg" rows="2" placeholder="消息 (⌘Enter 提交)"></textarea>'
+    + '<button id="commit-btn" title="提交">' + icon("CheckOutlined") + '</button>'
   ;
   host.appendChild(box);
   $("commit-btn").onclick = async () => {
     const msg = $("commit-msg").value.trim();
-    if (!msg) return;
+    if (!msg) { toast("请先填写提交信息", "err"); return; }
+    if (!st.staged.length) {
+      if (!st.unstaged.length) { toast("没有更改可提交", "err"); return; }
+      if (!confirm("没有已暂存的更改。要暂存全部更改并直接提交吗？")) return;
+      try { await invoke("git_add", { paths: st.unstaged.map((f) => f.path) }); } catch (e) { toast(String(e), "err"); return; }
+    }
     try {
       await invoke("git_commit", { message: msg });
       toast("已提交", "ok");
@@ -790,7 +845,35 @@ function branchMenuItem(b, close) {
     + (b.upstream && b.kind === "local" ? '<span class="vsc-menu-up">' + esc(b.upstream) + '</span>' : "")
     + '<span class="vsc-bi-time">' + relTime(b.time) + '</span></div>'
     + '<div class="vsc-bi-sub">' + esc(b.author || "") + (b.short ? " · " + esc(b.short) : "") + (b.subject ? " · " + esc(b.subject) : "") + '</div>';
-  if (!b.current) it.onclick = async () => {
+  if (b.current) return it;
+  const ops = document.createElement("div");
+  ops.className = "vsc-bi-ops";
+  const mergeBtn = document.createElement("span");
+  mergeBtn.className = "vsc-bi-op";
+  mergeBtn.textContent = "合并";
+  mergeBtn.title = "合并到当前分支";
+  mergeBtn.onclick = async (ev) => {
+    ev.stopPropagation();
+    close();
+    const from = b.kind === "remote" && b.name.startsWith("origin/") ? b.name : b.name;
+    try { await invoke("git_merge", { branch: from }); toast("已合并 " + from, "ok"); await refreshAll(); } catch (e) { toast(String(e), "err"); }
+  };
+  ops.appendChild(mergeBtn);
+  if (b.kind === "local") {
+    const delBtn = document.createElement("span");
+    delBtn.className = "vsc-bi-op danger";
+    delBtn.textContent = "删除";
+    delBtn.title = "删除分支";
+    delBtn.onclick = async (ev) => {
+      ev.stopPropagation();
+      close();
+      if (!confirm("删除分支 " + b.name + "？")) return;
+      try { await invoke("git_branch_delete", { branch: b.name, force: false }); toast("已删除 " + b.name, "ok"); } catch (e) { toast(String(e), "err"); }
+    };
+    ops.appendChild(delBtn);
+  }
+  it.querySelector(".vsc-bi-main").appendChild(ops);
+  it.onclick = async () => {
     close();
     try {
       await invoke("git_checkout", { branch: b.name, newBranch: false });
