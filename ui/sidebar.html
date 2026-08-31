@@ -137,7 +137,8 @@
   .vsc-commit #commit-btn { position: absolute; top: 12px; right: 14px; background: none; border: none; color: var(--acc); cursor: pointer; padding: 2px; }
   .vsc-commit #commit-btn:disabled { color: var(--dim); opacity: .5; cursor: default; }
   .vsc-commit #commit-btn svg.anticon { width: 15px; height: 15px; }
-  .vsc-sechead { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; }
+  .vsc-sechead { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; user-select: none; white-space: nowrap; }
+  .vsc-sechead > span:not(.chev):not(.cnt) { overflow: hidden; text-overflow: ellipsis; }
   .vsc-sechead:hover { background: #ffffff0d; }
   .vsc-sechead .chev { display: inline-flex; }
   .vsc-sechead .chev svg.anticon { width: 10px; height: 10px; transition: transform .1s; }
@@ -169,7 +170,8 @@
 </style>
 </head>
 <body>
-  <div id="panel">
+  <div id="dragbar" title="拖拽调整宽度"></div>
+<div id="panel">
     <div id="panel-head">
       <span class="title" id="head-title">工作区</span>
       <button class="btn" id="head-refresh" title="刷新"></button>
@@ -190,7 +192,6 @@
       <div id="view-git" class="hidden"></div>
     </div>
   </div>
-  <div id="dragbar" title="拖拽调整宽度"></div>
   <div id="bar">
     <button class="tab active" id="tab-files" title="文件"></button>
     <button class="tab" id="tab-search" title="搜索"></button>
@@ -824,8 +825,9 @@ async function buildGraph(host) {
   sh.innerHTML = '<span class="chev">' + icon("CaretDownOutlined") + '</span><span>提交历史</span>';
   const box = document.createElement("div");
   box.className = "vsc-graph";
-  sh.appendChild(box);
   host.appendChild(sh);
+  host.appendChild(box);
+  sh.addEventListener("click", () => box.classList.toggle("closed"));
   box.innerHTML = '<div class="msg">加载中…</div>';
   let commits;
   try { commits = await invoke("git_log", { max: 50 }); } catch (e) { box.innerHTML = '<div class="err">' + esc(e) + "</div>"; return; }
@@ -929,7 +931,7 @@ $("head-collapse").onclick = doCollapse;
 // 拖拽调宽：dragbar 在面板与竖条之间，clientX 即目标面板宽
 $("dragbar").addEventListener("mousedown", (ev) => {
   ev.preventDefault();
-  const move = (e) => invoke("set_sidebar_width", { width: e.clientX });
+  const move = (e) => invoke("set_sidebar_width", { width: document.body.clientWidth - 44 - e.clientX });
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
