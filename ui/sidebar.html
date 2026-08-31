@@ -8,12 +8,15 @@
   * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
   html, body { height: 100%; background: transparent; }
   body { overflow: hidden; font: 12px/1.5 -apple-system, "PingFang SC", "Segoe UI", sans-serif; color: var(--fg); user-select: none; }
-  #kernel-frame { position: fixed; inset: 0; width: 100%; height: 100%; border: none; background: #1e1e1e; z-index: 0; }
-  #panel { position: fixed; top: 0; bottom: 0; right: 44px; width: 300px; display: flex; flex-direction: column; background: var(--bg); z-index: 2; transition: transform 160ms ease; }
-  #dragbar { position: fixed; top: 0; bottom: 0; right: 44px; width: 5px; margin-right: 300px; cursor: col-resize; background: var(--bg); border-left: 1px solid var(--line); border-right: 1px solid var(--line); z-index: 3; transition: transform 160ms ease, opacity 160ms ease; }
+  :root { --sb-panel-w: 300px; }
+  #kernel-frame { position: fixed; top: 0; bottom: 0; left: 0; width: calc(100% - 44px - var(--sb-panel-w)); border: none; background: #1e1e1e; z-index: 0; transition: width 160ms ease; }
+  #panel { position: fixed; top: 0; bottom: 0; right: 44px; width: var(--sb-panel-w); display: flex; flex-direction: column; background: var(--bg); z-index: 2; transition: transform 160ms ease; }
+  #dragbar { position: fixed; top: 0; bottom: 0; right: 44px; width: 5px; margin-right: var(--sb-panel-w); cursor: col-resize; background: var(--bg); border-left: 1px solid var(--line); border-right: 1px solid var(--line); z-index: 3; transition: transform 160ms ease, opacity 160ms ease; }
   #dragbar:hover { background: var(--acc); opacity: .4; }
   body.sb-hidden #panel { transform: translateX(calc(100% + 44px)); }
+  body.sb-hidden #kernel-frame { width: calc(100% - 44px); }
   body.sb-hidden #dragbar { transform: translateX(100vw); opacity: 0; }
+  body.dragging #kernel-frame, body.dragging #panel, body.dragging #dragbar { transition: none; }
   #bar { position: fixed; top: 0; bottom: 0; right: 0; width: 44px; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 8px 0; gap: 4px; z-index: 4; }
   .tab { width: 36px; height: 36px; border: none; background: none; color: var(--dim); font-size: 17px; border-radius: 6px; cursor: pointer; position: relative; }
   .tab:hover { color: var(--fg); }
@@ -1041,9 +1044,7 @@ async function act(cmd, paths) {
 
 // 恢复面板宽度偏好
 (function () {
-  const w = Number(localStorage.getItem("sb-panel-w") || 300);
-  $("panel").style.width = w + "px";
-  $("dragbar").style.marginRight = w + "px";
+  setPanelWidth(Number(localStorage.getItem("sb-panel-w") || 300));
 })();
 
 // ── Tab 切换 / 刷新 / 折叠 ──
@@ -1081,13 +1082,12 @@ $("head-refresh").onclick = async () => {
   else if (activeTab === "search") await runSearch();
 };
 // ── 折叠/展开：纯 DOM 宽度动画（iframe + 悬浮面板），无 webview bounds 操作 ──
+function setPanelWidth(w) {
+  document.documentElement.style.setProperty("--sb-panel-w", w + "px");
+}
 function layoutCollapsed(hidden) {
   document.body.classList.toggle("sb-hidden", hidden);
-  if (!hidden) {
-    const w = Number(localStorage.getItem("sb-panel-w") || 300);
-    $("panel").style.width = w + "px";
-    $("dragbar").style.marginRight = w + "px";
-  }
+  if (!hidden) setPanelWidth(Number(localStorage.getItem("sb-panel-w") || 300));
 }
 async function doCollapse() {
   if (collapsing) return;
@@ -1110,15 +1110,16 @@ listen("dsh-sidebar-toggled", (ev) => {
 // 拖拽调宽：右缘固定 44px 图标条，clientX 即目标面板宽；实时改 DOM，松手持久化
 $("dragbar").addEventListener("mousedown", (ev) => {
   ev.preventDefault();
+  document.body.classList.add("dragging");
   const move = (e) => {
     const w = Math.min(600, Math.max(260, document.body.clientWidth - 44 - e.clientX));
-    $("panel").style.width = w + "px";
-    $("dragbar").style.marginRight = w + "px";
+    setPanelWidth(w);
   };
   const up = () => {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
-    const w = parseInt($("panel").style.width, 10) || 300;
+    document.body.classList.remove("dragging");
+    const w = parseInt($("panel").style.width, 10) || parseInt(getComputedStyle(document.documentElement).getPropertyValue("--sb-panel-w")) || 300;
     localStorage.setItem("sb-panel-w", String(w));
     invoke("set_sidebar_width", { width: w });
   };
